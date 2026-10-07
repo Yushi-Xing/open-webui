@@ -83,6 +83,7 @@ test('assistant rendering and execution details explicitly disable code editing'
 	assert.match(source('src/lib/components/chat/Messages/ResponseMessage.svelte'), /editCodeBlock=\{false\}/);
 	assert.match(source('src/lib/components/chat/Messages/CodeExecutionModal.svelte'), /edit=\{false\}/);
 	assert.match(source('src/lib/components/chat/Messages/CodeBlock.svelte'), /export let edit = false/);
+	assert.match(source('src/lib/components/chat/Messages/CodeBlock.svelte'), /readOnly=\{!edit\}/);
 });
 
 test('chat requests include the supplemented system prompt', () => {
@@ -95,4 +96,5 @@ test('default Markdown styling is bundled and loaded by the page', () => {
 	assert.match(css, /--final-code-font:/);
 	assert.match(css, /line-height: 1\.95 !important/);
 	assert.match(source('src/app.html'), /href="\/static\/custom\.css"/);
+	assert.ok(source('src/app.html').indexOf('id="custom-stylesheet"') > source('src/app.html').indexOf('%sveltekit.head%'));
 });

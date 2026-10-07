@@ -31,8 +31,12 @@ is controlled in GitHub package settings.
   from the supplied CSS file; its SHA-256 is
   `ca0357aa7883dfb2c10e0dc620925f966f2b85b3d00c6dea74705e3e5b67f103`.
   CSS controls rendering styles; Markdown syntax parsing remains unchanged.
-- Assistant reply code blocks and execution details are read-only. Copy,
-  highlighting, download, and preview remain available where previously enabled.
+- Assistant reply code blocks and execution details use read-only CodeMirror,
+  preserving the original line numbers, folding, light/dark highlighting, and
+  layout. Copy, download, and preview remain available where previously enabled.
+- The custom stylesheet is loaded after app styles and remains last when styles
+  are added during navigation. Its 16px body size and 1.95 line height therefore
+  override the scaled app defaults. The supplied CSS file remains unchanged.
 - Each chat request appends the following rules after the existing system prompt,
   without adding another copy when they are already present:
 

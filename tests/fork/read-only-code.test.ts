@@ -16,10 +16,8 @@ vi.mock('$lib/utils', () => ({
 }));
 vi.mock('$lib/apis/utils', () => ({ executeCode: vi.fn() }));
 vi.mock('$lib/pyodide/createPyodideWorker', () => ({ createPyodideWorker: vi.fn() }));
-vi.mock('$lib/components/common/CodeEditor.svelte', () => ({
-	default: () => {
-		throw new Error('A reply code block must not instantiate an editable CodeEditor');
-	}
+vi.mock('$lib/components/common/CodeEditor.svelte', async () => ({
+	default: (await import('./fixtures/CodeEditor.svelte')).default
 }));
 vi.mock('$lib/components/common/Tooltip.svelte', async () => ({
 	default: (await import('./fixtures/Tooltip.svelte')).default
@@ -36,10 +34,11 @@ const renderCode = (lang: string, code: string) =>
 	}).body;
 
 describe('read-only reply code blocks', () => {
-	it('renders highlighted code and the copy button without an editable control', () => {
+	it('retains the CodeMirror renderer with readOnly enabled and a copy button', () => {
 		const html = renderCode('python', 'print("hello")');
 		expect(html).toContain('<pre');
-		expect(html).toContain('hljs');
+		expect(html).toContain('code-editor-fixture');
+		expect(html).toContain('data-readonly="true"');
 		expect(html).toContain('copy-code-button');
 		expect(html).not.toMatch(/contenteditable|textarea|cm-editor/);
 	});

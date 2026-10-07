@@ -36,7 +36,6 @@
 		<meta name="robots" content="noindex,nofollow" />
 
 		<script src="/static/loader.js" defer crossorigin="use-credentials"></script>
-		<link rel="stylesheet" href="/static/custom.css" crossorigin="use-credentials" />
 
 		<script>
 			function resizeIframe(obj) {
@@ -128,6 +127,7 @@
 		<title>Open WebUI</title>
 
 		%sveltekit.head%
+		<link id="custom-stylesheet" rel="stylesheet" href="/static/custom.css" crossorigin="use-credentials" />
 	</head>
 
 	<body data-sveltekit-preload-data="hover">

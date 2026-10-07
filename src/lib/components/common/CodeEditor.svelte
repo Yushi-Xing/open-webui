@@ -4,6 +4,7 @@
 	import { basicSetup, EditorView } from 'codemirror';
 	import { keymap, placeholder } from '@codemirror/view';
 	import { Compartment, EditorState } from '@codemirror/state';
+	import { codeEditorReadOnlyExtensions } from '$lib/utils/code-editor-readonly';
 
 	import { acceptCompletion } from '@codemirror/autocomplete';
 	import { indentWithTab } from '@codemirror/commands';
@@ -27,6 +28,7 @@
 	export let boilerplate = '';
 	export let value = '';
 	export let className = 'text-sm';
+	export let readOnly = false;
 
 	export let onSave = () => {};
 	export let onChange = () => {};
@@ -88,6 +90,11 @@
 	let isDarkMode = false;
 	let editorTheme = new Compartment();
 	let editorLanguage = new Compartment();
+	let editorReadOnly = new Compartment();
+
+	$: if (codeEditor) {
+		codeEditor.dispatch({ effects: editorReadOnly.reconfigure(codeEditorReadOnlyExtensions(readOnly)) });
+	}
 
 	const getLang = async () => {
 		const language = languages.find((l) => l.alias.includes(lang));
@@ -179,6 +186,7 @@ print("${endTag}")
 	};
 
 	export const formatPythonCodeHandler = async () => {
+		if (readOnly) return false;
 		if (codeEditor) {
 			const res = await (
 				$user?.role === 'admin'
@@ -214,11 +222,12 @@ print("${endTag}")
 		EditorView.updateListener.of((e) => {
 			if (e.docChanged) {
 				_value = e.state.doc.toString();
-				onChange(_value);
+				if (!readOnly) onChange(_value);
 			}
 		}),
 		editorTheme.of([]),
-		editorLanguage.of([])
+		editorLanguage.of([]),
+		editorReadOnly.of(codeEditorReadOnlyExtensions(readOnly))
 	];
 
 	$: if (lang) {
@@ -294,7 +303,7 @@ print("${endTag}")
 			}
 
 			// Format code when Ctrl + Shift + F is pressed
-			if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'f') {
+			if (!readOnly && (e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'f') {
 				e.preventDefault();
 				await formatPythonCodeHandler();
 			}

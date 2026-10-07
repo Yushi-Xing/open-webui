@@ -1,5 +1,4 @@
 <script lang="ts">
-	import hljs from 'highlight.js';
 	import { toast } from 'svelte-sonner';
 	import { getContext, onMount, tick, onDestroy } from 'svelte';
 	import type { Writable } from 'svelte/store';
@@ -16,7 +15,6 @@
 		unescapeHtml
 	} from '$lib/utils';
 
-	import 'highlight.js/styles/github-dark.min.css';
 	import equal from 'fast-deep-equal';
 
 	import CodeEditor from '$lib/components/common/CodeEditor.svelte';
@@ -64,7 +62,6 @@
 	let renderHTML = null;
 	let renderError = null;
 
-	let highlightedCode = null;
 	let executing = false;
 
 	let stdout = null;
@@ -557,9 +554,10 @@
 				{#if !collapsed}
 					{#if isDiff && !(edit && editingDiff)}
 						<DiffBlock code={_code} />
-					{:else if edit}
+					{:else}
 						<CodeEditor
 							value={_code}
+							readOnly={!edit}
 							{id}
 							{lang}
 							onSave={() => {
@@ -569,20 +567,6 @@
 								_code = value;
 							}}
 						/>
-					{:else}
-						<pre
-							class=" hljs p-4 px-5 overflow-x-auto"
-							style="border-top-left-radius: 0px; border-top-right-radius: 0px; {(executing ||
-								stdout ||
-								stderr ||
-								result) &&
-								'border-bottom-left-radius: 0px; border-bottom-right-radius: 0px;'}"><code
-								class="language-{lang} rounded-t-none whitespace-pre text-sm"
-								>{#if lang && hljs.getLanguage(lang)}{@html hljs.highlight(code, {
-										language: lang,
-										ignoreIllegals: true
-									}).value}{:else}{code}{/if}</code
-							></pre>
 					{/if}
 				{:else}
 					<div

@@ -49,6 +49,7 @@
 
 	import '../tailwind.css';
 	import '../app.css';
+	import { keepCustomStylesLast } from '$lib/utils/custom-styles';
 	import 'tippy.js/dist/tippy.css';
 
 	import { executeToolServer, getBackendConfig, getModels, getVersion } from '$lib/apis';
@@ -1075,7 +1076,10 @@
 		}
 	};
 
+	let stopCustomStylesObserver;
+	onDestroy(() => stopCustomStylesObserver?.());
 	onMount(async () => {
+		stopCustomStylesObserver = keepCustomStylesLast();
 		const originalFetch = window.fetch.bind(window);
 		window.fetch = async (input, init) => {
 			const response = await originalFetch(input, init);

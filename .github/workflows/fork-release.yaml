@@ -54,6 +54,12 @@ jobs:
         run: |
           mkdir -p artifacts
           npx vitest run --config vitest.fork.config.ts --reporter=verbose --reporter=junit --outputFile=artifacts/fork-tests.xml
+      - name: Verify original Markdown styling and read-only CodeMirror in Chromium
+        run: |
+          npm install --prefix "$RUNNER_TEMP/browser-test" --no-package-lock --ignore-scripts --no-audit --no-fund playwright@1.56.1
+          ln -s "$RUNNER_TEMP/browser-test/node_modules/playwright" node_modules/playwright
+          "$RUNNER_TEMP/browser-test/node_modules/.bin/playwright" install --with-deps chromium
+          node tests/fork/browser-regression.mjs
       - name: Retain regression test results
         if: always()
         uses: actions/upload-artifact@v4
