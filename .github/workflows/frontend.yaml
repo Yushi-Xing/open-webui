@@ -19,6 +19,7 @@ concurrency:
 jobs:
   # ── Format, i18n, and production build ────────────────────────────────────
   format-and-build:
+    if: github.repository == 'open-webui/open-webui'
     name: Format & Build
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -48,6 +49,7 @@ jobs:
 
   # ── Vitest unit tests ────────────────────────────────────────────────────
   unit-tests:
+    if: github.repository == 'open-webui/open-webui'
     name: Unit Tests
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -6,6 +6,7 @@
 	import { updateUserInfo } from '$lib/apis/users';
 	import { getUserPosition } from '$lib/utils';
 	import { normalizeAppFontFamily, setAppFontFamily, setTextScale } from '$lib/utils/text-scale';
+	import { getDefaultTextScale } from '$lib/utils/interface-defaults';
 
 	import Minus from '$lib/components/icons/Minus.svelte';
 	import Plus from '$lib/components/icons/Plus.svelte';
@@ -476,12 +477,12 @@
 					type="button"
 					on:click={() => {
 						if (textScale === null || (isDefaultSetting('textScale') && !showTextScaleSlider)) {
-							textScale = textScale ?? defaultSettings.textScale ?? 1;
+							textScale = textScale ?? getDefaultTextScale(defaultSettings);
 							showTextScaleSlider = true;
 						} else {
 							showTextScaleSlider = false;
 							if (!externalSettings) {
-								setTextScale(defaultSettings.textScale ?? 1);
+								setTextScale(getDefaultTextScale(defaultSettings));
 							}
 							textScale = null;
 							saveSettings({ textScale });
@@ -503,7 +504,10 @@
 					type="button"
 					class="rounded-lg p-1 transition outline-gray-200 hover:bg-gray-100 dark:outline-gray-700 dark:hover:bg-gray-800"
 					on:click={() => {
-						textScale = Math.max(1, parseFloat(((textScale ?? 1) - 0.1).toFixed(2)));
+						textScale = Math.max(
+							1,
+							parseFloat(((textScale ?? getDefaultTextScale(defaultSettings)) - 0.1).toFixed(2))
+						);
 						setTextScaleHandler(textScale);
 					}}
 					aria-labelledby="ui-scale-label"
@@ -522,7 +526,7 @@
 						step={0.01}
 						bind:value={textScale}
 						on:change={() => {
-							setTextScaleHandler(textScale ?? 1);
+							setTextScaleHandler(textScale ?? getDefaultTextScale(defaultSettings));
 						}}
 						aria-labelledby="ui-scale-label"
 						aria-valuemin="1"
@@ -536,7 +540,10 @@
 					type="button"
 					class="rounded-lg p-1 transition outline-gray-200 hover:bg-gray-100 dark:outline-gray-700 dark:hover:bg-gray-800"
 					on:click={() => {
-						textScale = Math.min(1.5, parseFloat(((textScale ?? 1) + 0.1).toFixed(2)));
+						textScale = Math.min(
+							1.5,
+							parseFloat(((textScale ?? getDefaultTextScale(defaultSettings)) + 0.1).toFixed(2))
+						);
 						setTextScaleHandler(textScale);
 					}}
 					aria-labelledby="ui-scale-label"

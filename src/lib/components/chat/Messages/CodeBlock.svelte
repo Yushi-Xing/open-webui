@@ -32,7 +32,7 @@
 	const i18n = getContext<Writable<i18nType>>('i18n');
 
 	export let id = '';
-	export let edit = true;
+	export let edit = false;
 
 	export let onSave = (e) => {};
 	export let onUpdate = (e, codeBlockId = '') => {};

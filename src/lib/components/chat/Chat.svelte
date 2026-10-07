@@ -68,6 +68,7 @@
 		isRasterImageContentType
 	} from '$lib/utils';
 	import { AudioQueue } from '$lib/utils/audio';
+	import { appendCodeOutputRules } from '$lib/utils/chat-system-prompt';
 	import { createTemporaryChatId, isTemporaryChatId } from '$lib/utils/chatId';
 	import { applyResponseStreamEvent, getOutputText } from './Messages/structuredOutput';
 
@@ -3488,9 +3489,10 @@
 		// Always include system prompt — backend extracts it and prepends to DB messages.
 		// Only temp chats need conversation messages (persisted chats load from DB).
 		let messages: any[] = [
-			params?.system || $settings.system
-				? { role: 'system', content: `${params?.system ?? $settings?.system ?? ''}` }
-				: undefined
+			{
+				role: 'system',
+				content: appendCodeOutputRules(params?.system ?? $settings?.system)
+			}
 		].filter(Boolean);
 
 		if ($temporaryChatEnabled) {

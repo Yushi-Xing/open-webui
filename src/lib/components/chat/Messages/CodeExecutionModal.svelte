@@ -69,6 +69,7 @@
 							? 'rounded-b-none'
 							: ''}
 						run={false}
+						edit={false}
 					/>
 				</div>
 

@@ -145,6 +145,7 @@
 	import { AIAutocompletion } from './RichTextInput/AutoCompletion.js';
 
 	import StarterKit from '@tiptap/starter-kit';
+	import { getRichTextLinkOptions } from '$lib/utils/rich-text-link-options';
 
 	// Bubble and Floating menus are currently fixed to v2 due to styling issues in v3
 	// TODO: Update to v3 when styling issues are resolved
@@ -808,7 +809,7 @@
 			element: element,
 			extensions: [
 				StarterKit.configure({
-					link: link ? { autolink: autoFormat, linkOnPaste: autoFormat } : false,
+					link: getRichTextLinkOptions({ link, messageInput, richText, autoFormat }),
 					code: false, // Disabled in favor of FixedCode (see workaround above)
 					...(messageInput ? { italic: false } : {}),
 					// When rich text is on, ListKit + CodeBlockLowlight provide these.

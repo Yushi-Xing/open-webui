@@ -1,0 +1,181 @@
+name: Fork tests and Docker image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Chat regression tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CYPRESS_INSTALL_BINARY: '0'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install locked frontend dependencies
+        run: npm ci --force
+      - name: Install test DOM without changing the project lockfile
+        run: npm install --no-save --package-lock=false --ignore-scripts --force jsdom@26.1.0
+      - name: Test defaults and component wiring without a project build
+        run: node tests/fork/chat-defaults.node.mjs
+      - name: Test real editor paste, serialization and read-only code rendering
+        run: |
+          mkdir -p artifacts
+          npx vitest run --config vitest.fork.config.ts --reporter=verbose --reporter=junit --outputFile=artifacts/fork-tests.xml
+      - name: Retain regression test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-regression-results
+          path: artifacts/
+          if-no-files-found: ignore
+
+  build:
+    name: Build and smoke test (${{ matrix.arch }})
+    needs: tests
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set image coordinates
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "IMAGE_TAG=git-${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Allow frontend compilation enough heap on the CI runner
+        run: |
+          awk '
+            /^FROM --platform=\$BUILDPLATFORM node:/ {
+              print
+              print "ENV NODE_OPTIONS=\"--max-old-space-size=8192\""
+              next
+            }
+            { print }
+          ' Dockerfile > "$RUNNER_TEMP/Dockerfile"
+      - name: Build the standard image using the repository Dockerfile
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ runner.temp }}/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          build-args: |
+            BUILD_HASH=${{ github.sha }}
+            USE_OLLAMA=false
+            USE_CUDA=false
+          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }},mode=max
+      - name: Verify image version and bundled Markdown stylesheet
+        run: |
+          set -euo pipefail
+          image="$IMAGE:$IMAGE_TAG-${{ matrix.arch }}"
+          test "$(docker run --rm --entrypoint printenv "$image" WEBUI_BUILD_VERSION)" = "$GITHUB_SHA"
+          expected=$(sha256sum static/custom.css | cut -d ' ' -f 1)
+          actual=$(docker run --rm --entrypoint sha256sum "$image" /app/build/static/custom.css | cut -d ' ' -f 1)
+          test "$actual" = "$expected"
+      - name: Smoke test container startup, HTTP health and served stylesheet
+        run: |
+          set -euo pipefail
+          image="$IMAGE:$IMAGE_TAG-${{ matrix.arch }}"
+          docker run -d --name fork-smoke -p 127.0.0.1:3000:8080 \
+            -e WEBUI_SECRET_KEY=ci-smoke-only-not-for-deployment \
+            -e ENABLE_OLLAMA_API=false \
+            "$image"
+          ready=false
+          for attempt in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:3000/health > /tmp/fork-health.json; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = true
+          jq -e '.status == true' /tmp/fork-health.json
+          curl -fsS http://127.0.0.1:3000/ > /tmp/fork-index.html
+          grep -q '/static/custom.css' /tmp/fork-index.html
+          curl -fsS http://127.0.0.1:3000/static/custom.css > /tmp/fork-custom.css
+          cmp static/custom.css /tmp/fork-custom.css
+      - name: Retain container logs
+        if: always()
+        run: |
+          mkdir -p artifacts
+          docker logs fork-smoke > artifacts/container.log 2>&1 || true
+      - name: Upload smoke test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-smoke-${{ matrix.arch }}
+          path: artifacts/
+      - name: Publish the tested architecture image
+        run: docker push "$IMAGE:$IMAGE_TAG-${{ matrix.arch }}"
+
+  publish:
+    name: Publish verified multi-platform image
+    needs: [tests, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish and inspect immutable and rolling custom tags
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="git-${GITHUB_SHA:0:12}"
+          docker buildx imagetools create \
+            -t "$image:$tag" -t "$image:custom" \
+            "$image:$tag-amd64" "$image:$tag-arm64"
+          docker buildx imagetools inspect "$image:$tag"
+          docker buildx imagetools inspect "$image:$tag" --raw > /tmp/manifest.json
+          jq -e 'any(.manifests[]; .platform.architecture == "amd64") and any(.manifests[]; .platform.architecture == "arm64")' /tmp/manifest.json
+          {
+            echo "Image: \`$image:$tag\`"
+            echo "Source commit: \`$GITHUB_SHA\`"
+            echo 'Platforms: linux/amd64, linux/arm64'
+            echo 'Both architecture images passed startup, health and stylesheet checks.'
+          } >> "$GITHUB_STEP_SUMMARY"

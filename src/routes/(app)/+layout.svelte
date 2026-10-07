@@ -12,6 +12,7 @@
 	import { getTerminalServers } from '$lib/apis/terminal';
 	import { getUserSettings } from '$lib/apis/users';
 	import { setAppFontFamily, setTextScale } from '$lib/utils/text-scale';
+	import { getDefaultTextScale } from '$lib/utils/interface-defaults';
 
 	import { WEBUI_VERSION, WEBUI_API_BASE_URL } from '$lib/constants';
 	import { compareVersion } from '$lib/utils';
@@ -72,7 +73,7 @@
 		}
 		loadKeybindings(userSettings?.keybindings);
 
-		setTextScale($settings?.textScale ?? 1);
+		setTextScale(getDefaultTextScale($settings));
 		setAppFontFamily($settings?.fontFamily ?? null);
 
 		if (cb) {

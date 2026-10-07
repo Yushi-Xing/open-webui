@@ -1,4 +1,6 @@
-export const setTextScale = (scale: number) => {
+import { DEFAULT_TEXT_SCALE } from './interface-defaults';
+
+export const setTextScale = (scale: number = DEFAULT_TEXT_SCALE) => {
 	if (typeof document === 'undefined') {
 		return;
 	}

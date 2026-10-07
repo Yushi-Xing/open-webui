@@ -1715,7 +1715,10 @@ except Exception as e:
     log.exception(f'Error loading DEFAULT_INTERFACE_SETTINGS: {e}')
     default_interface_settings = {}
 
-DEFAULT_INTERFACE_SETTINGS = default_interface_settings if isinstance(default_interface_settings, dict) else {}
+DEFAULT_INTERFACE_SETTINGS = {
+    'textScale': 1.2,
+    **(default_interface_settings if isinstance(default_interface_settings, dict) else {}),
+}
 
 DEFAULT_USER_ROLE = os.getenv('DEFAULT_USER_ROLE', 'pending')
 

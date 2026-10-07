@@ -847,7 +847,7 @@
 									save={!readOnly}
 									preview={!readOnly}
 									{compactPreview}
-									{editCodeBlock}
+									editCodeBlock={false}
 									{topPadding}
 									done={message?.done ?? false}
 									allowEmbeds={!readOnly}

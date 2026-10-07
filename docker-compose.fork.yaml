@@ -1,0 +1,25 @@
+services:
+  open-webui:
+    image: ${OPEN_WEBUI_IMAGE:-ghcr.io/yushi-xing/open-webui:custom}
+    container_name: open-webui
+    ports:
+      - '3000:8080'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      - open-webui-data:/app/backend/data
+    environment:
+      WEBUI_SECRET_KEY: '${WEBUI_SECRET_KEY:?Set WEBUI_SECRET_KEY to the existing deployment key}'
+      ENABLE_OLLAMA_API: 'false'
+      ENABLE_OPENAI_API: 'true'
+      DEFAULT_USER_ROLE: pending
+      DATABASE_POOL_SIZE: '8'
+      DATABASE_SQLITE_PRAGMA_CACHE_SIZE: '-2000'
+      DATABASE_SQLITE_PRAGMA_MMAP_SIZE: '0'
+      DATABASE_ENABLE_SESSION_SHARING: 'false'
+      ENABLE_AUTOCOMPLETE_GENERATION: 'false'
+      ENABLE_FOLLOW_UP_GENERATION: 'false'
+    restart: unless-stopped
+
+volumes:
+  open-webui-data:
