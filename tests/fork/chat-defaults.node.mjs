@@ -90,7 +90,7 @@ test('chat requests include the supplemented system prompt', () => {
 });
 
 test('default Markdown styling is bundled and loaded by the page', () => {
-	const css = source('static/custom.css');
+	const css = source('static/static/custom.css');
 	assert.match(css, /\.markdown-prose/);
 	assert.match(css, /--final-code-font:/);
 	assert.match(css, /line-height: 1\.95 !important/);

@@ -127,7 +127,7 @@ jobs:
           echo "Source commit: $GITHUB_SHA"
           echo "Image version: $version"
           test "$version" = "$GITHUB_SHA"
-          expected=$(sha256sum static/custom.css | cut -d ' ' -f 1)
+          expected=$(sha256sum static/static/custom.css | cut -d ' ' -f 1)
           actual=$(docker run --rm --entrypoint sha256sum "$image" /app/build/static/custom.css | cut -d ' ' -f 1)
           echo "Source stylesheet SHA256: $expected"
           echo "Image stylesheet SHA256: $actual"
@@ -153,7 +153,7 @@ jobs:
           curl -fsS http://127.0.0.1:3000/ > /tmp/fork-index.html
           grep -q '/static/custom.css' /tmp/fork-index.html
           curl -fsS http://127.0.0.1:3000/static/custom.css > /tmp/fork-custom.css
-          cmp static/custom.css /tmp/fork-custom.css
+          cmp static/static/custom.css /tmp/fork-custom.css
       - name: Retain container logs
         if: always()
         run: |

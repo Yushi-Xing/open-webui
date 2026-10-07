@@ -27,7 +27,7 @@ is controlled in GitHub package settings.
   continues to use the clipboard's plain text.
 - The default interface scale is 1.2. Existing personal or administrator overrides
   take precedence. Resetting the personal scale returns to the effective default.
-- `static/custom.css` is the default Markdown stylesheet. It was copied unchanged
+- `static/static/custom.css` is the default Markdown stylesheet. It was copied unchanged
   from the supplied CSS file; its SHA-256 is
   `ca0357aa7883dfb2c10e0dc620925f966f2b85b3d00c6dea74705e3e5b67f103`.
   CSS controls rendering styles; Markdown syntax parsing remains unchanged.
