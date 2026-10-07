@@ -1,6 +1,7 @@
 import { mount } from 'svelte';
 import { EditorView } from '@codemirror/view';
 import App from './App.svelte';
+import '../../../src/tailwind.css';
 import '../../../src/app.css';
 import { keepCustomStylesLast } from '../../../src/lib/utils/custom-styles.js';
 

@@ -82,6 +82,8 @@ try {
 	});
 	await page.waitForFunction(() => getComputedStyle(document.querySelector('.markdown-prose p')).fontSize === '16px');
 	check('later app stylesheet loading cannot override custom body size', (await stats()).bodySize === '16px');
+	await page.evaluate(value => window.updatePreviewCode(value), original);
+	await page.waitForFunction(value => window.previewEditor().state.doc.toString() === value, original);
 	await page.screenshot({ path: 'artifacts/markdown-light-readonly.png', fullPage: true });
 	await page.evaluate(() => document.documentElement.classList.replace('light', 'dark'));
 	await page.waitForFunction(() => window.previewDarkTheme());
