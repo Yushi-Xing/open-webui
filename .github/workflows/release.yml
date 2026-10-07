@@ -15,6 +15,7 @@ concurrency:
 jobs:
   # ── Create release and trigger downstream workflows ──────────────────────
   publish:
+    if: github.repository == 'open-webui/open-webui'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

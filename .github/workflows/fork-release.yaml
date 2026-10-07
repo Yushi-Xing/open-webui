@@ -33,6 +33,8 @@ jobs:
         run: npm install --no-save --package-lock=false --ignore-scripts --force jsdom@26.1.0
       - name: Test defaults and component wiring without a project build
         run: node tests/fork/chat-defaults.node.mjs
+      - name: Generate SvelteKit TypeScript configuration on the CI runner
+        run: npx svelte-kit sync
       - name: Test real editor paste, serialization and read-only code rendering
         run: |
           mkdir -p artifacts
