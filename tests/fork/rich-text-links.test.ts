@@ -4,6 +4,7 @@ import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import TurndownService from 'turndown';
 import { getRichTextLinkOptions } from '../../src/lib/utils/rich-text-link-options.js';
+import { PromptLink } from '../../src/lib/components/common/RichTextInput/PromptLink.js';
 
 const editors: Editor[] = [];
 const options = { link: false, messageInput: true, richText: true, autoFormat: true };
@@ -25,7 +26,10 @@ const createEditor = (content: any = '', linkOptions = getRichTextLinkOptions(op
 	document.body.appendChild(element);
 	const editor = new Editor({
 		element,
-		extensions: [StarterKit.configure({ link: linkOptions })],
+		extensions: [
+			StarterKit.configure({ link: false }),
+			...(linkOptions ? [PromptLink.configure(linkOptions)] : [])
+		],
 		content
 	});
 	editors.push(editor);

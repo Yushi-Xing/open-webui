@@ -68,7 +68,8 @@ test('the English rules require chat code blocks, a file, and terminal output', 
 });
 
 test('all prompt editor surfaces use the shared link configuration', () => {
-	assert.match(source('src/lib/components/common/RichTextInput.svelte'), /link: getRichTextLinkOptions/);
+	assert.match(source('src/lib/components/common/RichTextInput.svelte'), /PromptLink\.configure\(/);
+	assert.match(source('src/lib/components/common/RichTextInput.svelte'), /getRichTextLinkOptions\(/);
 	for (const path of [
 		'src/lib/components/chat/MessageInput.svelte',
 		'src/lib/components/channel/MessageInput.svelte',

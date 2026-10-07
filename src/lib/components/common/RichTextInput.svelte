@@ -146,6 +146,7 @@
 
 	import StarterKit from '@tiptap/starter-kit';
 	import { getRichTextLinkOptions } from '$lib/utils/rich-text-link-options';
+	import { PromptLink } from './RichTextInput/PromptLink';
 
 	// Bubble and Floating menus are currently fixed to v2 due to styling issues in v3
 	// TODO: Update to v3 when styling issues are resolved
@@ -809,7 +810,9 @@
 			element: element,
 			extensions: [
 				StarterKit.configure({
-					link: getRichTextLinkOptions({ link, messageInput, richText, autoFormat }),
+					link: messageInput
+						? false
+						: getRichTextLinkOptions({ link, messageInput, richText, autoFormat }),
 					code: false, // Disabled in favor of FixedCode (see workaround above)
 					...(messageInput ? { italic: false } : {}),
 					// When rich text is on, ListKit + CodeBlockLowlight provide these.
@@ -829,6 +832,13 @@
 					// can undo strikethrough via the toolbar, so the shortcut is fine.
 					...(richText ? {} : { strike: false })
 				}),
+				...(messageInput && (richText || link)
+					? [
+							PromptLink.configure(
+								getRichTextLinkOptions({ link, messageInput, richText, autoFormat }) || {}
+							)
+						]
+					: []),
 				FixedCode,
 				...(messageInput ? [PromptItalic] : []),
 				...(dragHandle ? [ListItemDragHandle] : []),
