@@ -123,9 +123,14 @@ jobs:
         run: |
           set -euo pipefail
           image="$IMAGE:$IMAGE_TAG-${{ matrix.arch }}"
-          test "$(docker run --rm --entrypoint printenv "$image" WEBUI_BUILD_VERSION)" = "$GITHUB_SHA"
+          version=$(docker run --rm --entrypoint printenv "$image" WEBUI_BUILD_VERSION)
+          echo "Source commit: $GITHUB_SHA"
+          echo "Image version: $version"
+          test "$version" = "$GITHUB_SHA"
           expected=$(sha256sum static/custom.css | cut -d ' ' -f 1)
           actual=$(docker run --rm --entrypoint sha256sum "$image" /app/build/static/custom.css | cut -d ' ' -f 1)
+          echo "Source stylesheet SHA256: $expected"
+          echo "Image stylesheet SHA256: $actual"
           test "$actual" = "$expected"
       - name: Smoke test container startup, HTTP health and served stylesheet
         run: |
