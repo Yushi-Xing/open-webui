@@ -29,8 +29,23 @@ jobs:
           cache: npm
       - name: Install locked frontend dependencies
         run: npm ci --force
-      - name: Install test DOM without changing the project lockfile
-        run: npm install --no-save --package-lock=false --ignore-scripts --force jsdom@26.1.0
+      - name: Install an isolated test DOM without changing locked app dependencies
+        run: |
+          npm install --prefix "$RUNNER_TEMP/test-dom" --no-package-lock --ignore-scripts --no-audit --no-fund jsdom@26.1.0
+          ln -s "$RUNNER_TEMP/test-dom/node_modules/jsdom" node_modules/jsdom
+      - name: Verify tested editor and Svelte versions match the Docker build lockfile
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          for (const name of ['@tiptap/core', '@tiptap/starter-kit', '@tiptap/extension-link', '@tiptap/pm', 'svelte']) {
+            const path = `node_modules/${name}`;
+            const installed = JSON.parse(readFileSync(`${path}/package.json`, 'utf8')).version;
+            assert.equal(installed, lock.packages[path].version, name);
+            console.log(`${name}: ${installed}`);
+          }
+          JS
       - name: Test defaults and component wiring without a project build
         run: node tests/fork/chat-defaults.node.mjs
       - name: Generate SvelteKit TypeScript configuration on the CI runner

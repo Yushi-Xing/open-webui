@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import TurndownService from 'turndown';
@@ -7,6 +7,18 @@ import { getRichTextLinkOptions } from '../../src/lib/utils/rich-text-link-optio
 
 const editors: Editor[] = [];
 const options = { link: false, messageInput: true, richText: true, autoFormat: true };
+
+// jsdom has no ClipboardEvent constructor. ProseMirror's paste helpers use it
+// to tag an otherwise real DOM/schema/transaction paste operation.
+beforeAll(() => {
+	vi.stubGlobal(
+		'ClipboardEvent',
+		class extends Event {
+			clipboardData = null;
+		}
+	);
+});
+afterAll(() => vi.unstubAllGlobals());
 
 const createEditor = (content: any = '', linkOptions = getRichTextLinkOptions(options)) => {
 	const element = document.createElement('div');

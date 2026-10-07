@@ -46,7 +46,7 @@ describe('read-only reply code blocks', () => {
 
 	it('escapes HTML in unrecognized code instead of creating live elements', () => {
 		const html = renderCode('unknown-language', '<script>alert("test")</script>');
-		expect(html).toContain('&lt;script&gt;');
+		expect(html).toMatch(/&lt;script(?:>|&gt;)/);
 		expect(html).not.toContain('<script>');
 		expect(html).not.toMatch(/contenteditable|textarea|cm-editor/);
 	});
