@@ -7,3 +7,4 @@ import { keepCustomStylesLast } from '../../../src/lib/utils/custom-styles.js';
 keepCustomStylesLast();
 mount(App, { target: document.getElementById('app') });
 window.previewEditor = () => EditorView.findFromDOM(document.querySelector('.cm-editor'));
+window.previewDarkTheme = () => window.previewEditor().state.facet(EditorView.darkTheme);

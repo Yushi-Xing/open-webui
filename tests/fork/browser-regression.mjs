@@ -84,7 +84,7 @@ try {
 	check('later app stylesheet loading cannot override custom body size', (await stats()).bodySize === '16px');
 	await page.screenshot({ path: 'artifacts/markdown-light-readonly.png', fullPage: true });
 	await page.evaluate(() => document.documentElement.classList.replace('light', 'dark'));
-	await page.waitForSelector('.cm-editor.cm-dark');
+	await page.waitForFunction(() => window.previewDarkTheme());
 	const dark = await stats();
 	check('dark mode uses its original code and toolbar backgrounds', dark.background === 'rgb(32, 32, 32)' && dark.header === 'rgb(41, 41, 41)');
 	check('dark mode preserves read-only typography', dark.editable === 'false' && dark.codeSize === '13px' && dark.bodySize === '16px');
