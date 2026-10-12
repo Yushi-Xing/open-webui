@@ -8,7 +8,7 @@ export default defineConfig({
 		alias: { $lib: fileURLToPath(new URL('./src/lib', import.meta.url)) }
 	},
 	test: {
-		include: ['tests/fork/*.test.ts'],
+		include: ['tests/fork/*.test.ts', 'src/**/*.test.ts'],
 		environment: 'node',
 		pool: 'forks',
 		poolOptions: { forks: { singleFork: true } }
