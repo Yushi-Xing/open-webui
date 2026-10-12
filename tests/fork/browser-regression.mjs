@@ -91,9 +91,30 @@ try {
 	check('dark mode uses its original code and toolbar backgrounds', dark.background === 'rgb(32, 32, 32)' && dark.header === 'rgb(41, 41, 41)');
 	check('dark mode preserves read-only typography', dark.editable === 'false' && dark.codeSize === '13px' && dark.bodySize === '16px');
 	await page.screenshot({ path: 'artifacts/markdown-dark-readonly.png', fullPage: true });
+	await page.getByRole('button', { name: 'Add control', exact: true }).click();
+	const dialog = page.getByRole('dialog');
+	await dialog.getByRole('textbox', { name: 'Control name', exact: true }).fill('Thinking');
+	await dialog.getByRole('button', { name: 'Slider', exact: true }).click();
+	await dialog.getByRole('textbox', { name: 'Option name', exact: true }).fill('Low');
+	check('slider requires at least two named options', await dialog.getByRole('button', { name: 'Apply', exact: true }).isDisabled());
+	await dialog.getByRole('textbox', { name: 'Custom Parameter Name', exact: true }).fill('reasoning_effort');
+	await dialog.getByRole('textbox', { name: 'Custom Parameter Value', exact: true }).fill('low');
+	await dialog.getByRole('button', { name: 'Add option', exact: true }).click();
+	await dialog.getByRole('textbox', { name: 'Option name', exact: true }).nth(1).fill('High');
+	await dialog.getByRole('textbox', { name: 'Custom Parameter Name', exact: true }).nth(1).fill('reasoning_effort');
+	await dialog.getByRole('textbox', { name: 'Custom Parameter Value', exact: true }).nth(1).fill('high');
+	await dialog.locator('select').selectOption({ label: 'Low' });
+	check('complete slider enables Apply', await dialog.getByRole('button', { name: 'Apply', exact: true }).isEnabled());
+	await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
+	await dialog.waitFor({ state: 'detached' });
+	let preview = await page.evaluate(() => window.modelControlsPreview());
+	check('Apply binds the complete slider without submitting the model', preview.saves === 0 && preview.controls.thinking.display === 'slider' && preview.controls.thinking.default === 'low' && preview.controls.thinking.options.low.params.reasoning_effort === 'low' && preview.controls.thinking.options.high.params.reasoning_effort === 'high');
+	await page.getByRole('button', { name: 'Save model', exact: true }).click();
+	check('model form remains independently submittable after Apply', (await page.evaluate(() => window.modelControlsPreview())).saves === 1);
 	check('no browser runtime errors', errors.length === 0);
 	await writeFile('artifacts/browser-regression.json', JSON.stringify({ results, light, dark }, null, 2));
 } catch (error) {
+	await writeFile('artifacts/browser-failure.json', JSON.stringify({ message: error.message, results, html: page ? await page.content().catch(() => '') : '' }, null, 2));
 	if (page) await page.screenshot({ path: 'artifacts/markdown-browser-failure.png', fullPage: true }).catch(() => {});
 	throw error;
 } finally {
