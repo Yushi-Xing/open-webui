@@ -121,6 +121,7 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             BUILD_HASH=${{ github.sha }}
+            BUILD_CHANNEL=stable
             USE_OLLAMA=false
             USE_CUDA=false
           cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
@@ -129,10 +130,14 @@ jobs:
         run: |
           set -euo pipefail
           image="$IMAGE:$IMAGE_TAG-${{ matrix.arch }}"
-          version=$(docker run --rm --entrypoint printenv "$image" WEBUI_BUILD_VERSION)
+          version=$(docker run --rm --entrypoint printenv "$image" WEBUI_BUILD_HASH)
           echo "Source commit: $GITHUB_SHA"
           echo "Image version: $version"
           test "$version" = "$GITHUB_SHA"
+          app_version=$(docker run --rm --entrypoint python "$image" -c 'import json; print(json.load(open("/app/package.json"))["version"])')
+          expected_version=$(node -p 'require("./package.json").version')
+          echo "Image app version: $app_version"
+          test "$app_version" = "$expected_version"
           expected=$(sha256sum static/static/custom.css | cut -d ' ' -f 1)
           actual=$(docker run --rm --entrypoint sha256sum "$image" /app/build/static/custom.css | cut -d ' ' -f 1)
           echo "Source stylesheet SHA256: $expected"

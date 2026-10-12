@@ -3,6 +3,10 @@
 All compilation and Docker image builds run in GitHub Actions. Do not run
 `npm run build`, Vite compilation, or `docker build` locally.
 
+The fork now includes upstream tag `v0.12.0` (commit
+`15818d88fd7bde1b73de33590f50d15d21e8d7c1`) while retaining the customizations
+below. Image checks validate both the source build hash and package version.
+
 The `Fork tests and Docker image` workflow tests prompt defaults, real TipTap
 pastes and Markdown serialization, JSON handoff between prompt editors, and
 read-only code rendering. It then builds standard images on native amd64 and
