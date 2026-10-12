@@ -121,7 +121,7 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             BUILD_HASH=${{ github.sha }}
-            BUILD_CHANNEL=stable
+            BUILD_CHANNEL=main
             USE_OLLAMA=false
             USE_CUDA=false
           cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache-${{ matrix.arch }}
@@ -161,6 +161,9 @@ jobs:
           done
           test "$ready" = true
           jq -e '.status == true' /tmp/fork-health.json
+          curl -fsS http://127.0.0.1:3000/api/version > /tmp/fork-version.json
+          expected_version=$(node -p 'require("./package.json").version')
+          jq -e --arg version "$expected_version" --arg hash "$GITHUB_SHA" '.version == $version and .hash == $hash' /tmp/fork-version.json
           curl -fsS http://127.0.0.1:3000/ > /tmp/fork-index.html
           grep -q '/static/custom.css' /tmp/fork-index.html
           curl -fsS http://127.0.0.1:3000/static/custom.css > /tmp/fork-custom.css
