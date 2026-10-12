@@ -110,6 +110,10 @@ if not {'amd64', 'arm64'} <= current_arches:
 candidates = [version for version in versions if version['name'] not in protected]
 if any(tags(version) and not all(obsolete_tag(tag) for tag in tags(version)) for version in candidates):
     raise RuntimeError('The deletion plan contains a retained or unknown tag.')
+if APPLY:
+    reviewed_ids = {int(value) for value in os.environ['REVIEWED_DELETE_IDS'].split(',')}
+    if {version['id'] for version in candidates} != reviewed_ids:
+        raise RuntimeError('The deletion candidates differ from the reviewed inventory. Inspect again before applying.')
 
 audit = {
     'apply': APPLY,

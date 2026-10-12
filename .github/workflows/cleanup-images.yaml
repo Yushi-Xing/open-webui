@@ -21,8 +21,9 @@ jobs:
     timeout-minutes: 15
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CLEANUP_APPLY: 'false'
+      CLEANUP_APPLY: 'true'
       KEEP_IMAGE_REVISIONS: '3c40910065e9,7e170c26a278'
+      REVIEWED_DELETE_IDS: '1361988195,1361981441,1350547111,1350542740,1350537855,1350530434,1350527439,1349756469,1349751036,1349738239,1349733119,1349727426,1349632096,1349626477'
     steps:
       - uses: actions/checkout@v5
       - name: Inspect retained manifests and generate a cleanup plan
