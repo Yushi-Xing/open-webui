@@ -1,0 +1,36 @@
+name: Inspect and clean old GHCR images
+
+on:
+  push:
+    branches: [maintenance/ghcr-cleanup]
+    paths: ['.github/workflows/cleanup-images.yaml', 'scripts/cleanup-ghcr.py']
+  workflow_dispatch:
+
+concurrency:
+  group: ghcr-cleanup
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CLEANUP_APPLY: 'false'
+      KEEP_IMAGE_REVISIONS: '3c40910065e9,7e170c26a278'
+    steps:
+      - uses: actions/checkout@v5
+      - name: Inspect retained manifests and generate a cleanup plan
+        run: python3 scripts/cleanup-ghcr.py
+      - name: Keep inventory and cleanup audit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ghcr-cleanup-audit
+          path: artifacts/ghcr-cleanup*.json
+          retention-days: 7
