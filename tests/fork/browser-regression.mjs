@@ -97,12 +97,12 @@ try {
 	await dialog.getByRole('button', { name: 'Slider', exact: true }).click();
 	await dialog.getByRole('textbox', { name: 'Option name', exact: true }).fill('Low');
 	check('slider requires at least two named options', await dialog.getByRole('button', { name: 'Apply', exact: true }).isDisabled());
-	await dialog.getByRole('textbox', { name: 'Custom Parameter Name', exact: true }).fill('reasoning_effort');
-	await dialog.getByRole('textbox', { name: 'Custom Parameter Value', exact: true }).fill('low');
+	await dialog.getByLabel('Custom Parameter Name', { exact: true }).fill('reasoning_effort');
+	await dialog.getByLabel('Custom Parameter Value', { exact: true }).fill('low');
 	await dialog.getByRole('button', { name: 'Add option', exact: true }).click();
 	await dialog.getByRole('textbox', { name: 'Option name', exact: true }).nth(1).fill('High');
-	await dialog.getByRole('textbox', { name: 'Custom Parameter Name', exact: true }).nth(1).fill('reasoning_effort');
-	await dialog.getByRole('textbox', { name: 'Custom Parameter Value', exact: true }).nth(1).fill('high');
+	await dialog.getByLabel('Custom Parameter Name', { exact: true }).nth(1).fill('reasoning_effort');
+	await dialog.getByLabel('Custom Parameter Value', { exact: true }).nth(1).fill('high');
 	await dialog.locator('select').selectOption({ label: 'Low' });
 	check('complete slider enables Apply', await dialog.getByRole('button', { name: 'Apply', exact: true }).isEnabled());
 	await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
