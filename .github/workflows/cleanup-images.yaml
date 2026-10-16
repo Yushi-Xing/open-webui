@@ -21,13 +21,32 @@ jobs:
     timeout-minutes: 15
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CLEANUP_APPLY: 'true'
-      KEEP_IMAGE_REVISIONS: '3c40910065e9,7e170c26a278'
-      REVIEWED_DELETE_IDS: '1361988195,1361981441,1350547111,1350542740,1350537855,1350530434,1350527439,1349756469,1349751036,1349738239,1349733119,1349727426,1349632096,1349626477'
+      CLEANUP_APPLY: 'false'
+      KEEP_IMAGE_REVISIONS: '0960e9f14e86,3c40910065e9'
+      EXPECTED_CURRENT_TAG: 'git-0960e9f14e86'
     steps:
       - uses: actions/checkout@v5
       - name: Inspect retained manifests and generate a cleanup plan
         run: python3 scripts/cleanup-ghcr.py
+      - name: Apply the exact plan and verify retained manifests
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          path = Path('artifacts/ghcr-cleanup-audit.json')
+          plan = json.loads(path.read_text())
+          Path('artifacts/ghcr-cleanup-plan.json').write_text(path.read_text())
+          env = {
+              **os.environ,
+              'CLEANUP_APPLY': 'true',
+              'REVIEWED_DELETE_IDS': ','.join(str(item['id']) for item in plan['delete']),
+              'EXPECTED_CURRENT_DIGEST': plan['current_digest'],
+          }
+          subprocess.run(['python3', 'scripts/cleanup-ghcr.py'], env=env, check=True)
+          PYTHON
       - name: Keep inventory and cleanup audit
         if: always()
         uses: actions/upload-artifact@v4

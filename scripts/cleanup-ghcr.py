@@ -101,6 +101,12 @@ while stack:
     stack.extend(item['digest'] for item in data.get('manifests', []))
 
 current, current_digest = manifest('custom')
+expected_tag = os.environ.get('EXPECTED_CURRENT_TAG')
+if expected_tag and manifest(expected_tag)[1] != current_digest:
+    raise RuntimeError('The custom tag does not point to the newly published release.')
+expected_digest = os.environ.get('EXPECTED_CURRENT_DIGEST')
+if expected_digest and expected_digest != current_digest:
+    raise RuntimeError('The custom tag changed since the cleanup plan was generated.')
 if current_digest not in protected:
     raise RuntimeError('The custom tag is not protected.')
 current_arches = {item.get('platform', {}).get('architecture') for item in current.get('manifests', [])}
@@ -111,7 +117,7 @@ candidates = [version for version in versions if version['name'] not in protecte
 if any(tags(version) and not all(obsolete_tag(tag) for tag in tags(version)) for version in candidates):
     raise RuntimeError('The deletion plan contains a retained or unknown tag.')
 if APPLY:
-    reviewed_ids = {int(value) for value in os.environ['REVIEWED_DELETE_IDS'].split(',')}
+    reviewed_ids = {int(value) for value in os.environ['REVIEWED_DELETE_IDS'].split(',') if value.strip()}
     if {version['id'] for version in candidates} != reviewed_ids:
         raise RuntimeError('The deletion candidates differ from the reviewed inventory. Inspect again before applying.')
 
