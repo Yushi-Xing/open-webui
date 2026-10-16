@@ -3,8 +3,8 @@
 All compilation and Docker image builds run in GitHub Actions. Do not run
 `npm run build`, Vite compilation, or `docker build` locally.
 
-The fork now includes upstream tag `v0.12.0` (commit
-`15818d88fd7bde1b73de33590f50d15d21e8d7c1`) while retaining the customizations
+The fork now includes upstream tag `v0.12.2` (commit
+`6a18585ff4c2e5f6805f682222cfbc46dc669ef8`) while retaining the customizations
 below. Image checks validate both the source build hash and package version.
 
 The `Fork tests and Docker image` workflow tests prompt defaults, real TipTap
@@ -13,6 +13,10 @@ read-only code rendering. It then builds standard images on native amd64 and
 arm64 runners. Each image must pass startup, health, build fingerprint, and
 stylesheet checks before publication. Failed test results and container logs
 are retained as Actions artifacts.
+
+The release workflow runs only through `workflow_dispatch`; pushing commits does
+not start another image build. Both native architecture builds reuse their GHCR
+build caches. Test artifacts and Docker build records are retained for seven days.
 
 Images are published under `ghcr.io/yushi-xing/open-webui`:
 

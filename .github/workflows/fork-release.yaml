@@ -1,10 +1,6 @@
 name: Fork tests and Docker image
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -13,6 +9,9 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  DOCKER_BUILD_RECORD_RETENTION_DAYS: '7'
 
 jobs:
   tests:
@@ -67,6 +66,7 @@ jobs:
           name: chat-regression-results
           path: artifacts/
           if-no-files-found: ignore
+          retention-days: 7
 
   build:
     name: Build and smoke test (${{ matrix.arch }})
@@ -179,6 +179,7 @@ jobs:
         with:
           name: container-smoke-${{ matrix.arch }}
           path: artifacts/
+          retention-days: 7
       - name: Publish the tested architecture image
         run: docker push "$IMAGE:$IMAGE_TAG-${{ matrix.arch }}"
 
