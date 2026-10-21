@@ -3,8 +3,8 @@
 All compilation and Docker image builds run in GitHub Actions. Do not run
 `npm run build`, Vite compilation, or `docker build` locally.
 
-The fork now includes upstream tag `v0.12.2` (commit
-`6a18585ff4c2e5f6805f682222cfbc46dc669ef8`) while retaining the customizations
+The fork now includes upstream tag `v0.12.3` (commit
+`91ea4e3421d1d8069f13d4a463fcb5986d94ea60`) while retaining the customizations
 below. Image checks validate both the source build hash and package version.
 
 The `Fork tests and Docker image` workflow tests prompt defaults, real TipTap
@@ -61,6 +61,28 @@ Additional rules for knowledge-based questions and fact-checking
 
 The file/terminal instruction requires an available tool to execute those actions;
 the prompt does not itself provide terminal access or guarantee model compliance.
+
+## Upstream fix review (v0.12.3)
+
+The October 21, 2026 review compared the official v0.12.3 source against
+v0.12.2 and the fork's changes:
+
+- Titled-link paste loss is still present upstream: `RichTextInput.svelte`
+  defaults `link` to `false`, configures StarterKit's link extension only when
+  that flag is enabled, and `chat/MessageInput.svelte` does not enable it.
+  Rich-text paste therefore still drops an HTML anchor's `href`. The existing
+  editor regression reproduces that disabled-link configuration and checks
+  the fork's preserved Markdown URL. Keep the fork's prompt link extension.
+- Assistant code editing remains enabled upstream: `CodeBlock.svelte` defaults
+  `edit` to `true` and `ResponseMessage.svelte` forwards
+  `editCodeBlock={!readOnly && editCodeBlock}`. Keep the read-only CodeMirror
+  customization and its editor/browser regressions.
+- Scale 1.2, the supplied Markdown CSS and the appended system rules are user
+  preferences, rather than upstream bug fixes. All remain in the fork.
+
+The source merged without conflicts. The encryption module's committed artifact
+and source checksums are verified without rebuilding it. Component/editor/browser
+regressions and production/image compilation run only in GitHub Actions.
 
 ## Update the existing deployment
 

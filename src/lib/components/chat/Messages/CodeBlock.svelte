@@ -28,6 +28,9 @@
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 
 	const i18n = getContext<Writable<i18nType>>('i18n');
+	const markdown = getContext<{ allowRemoteContent: boolean; document?: boolean } | undefined>(
+		'markdown'
+	);
 
 	export let id = '';
 	export let edit = false;
@@ -365,7 +368,11 @@
 
 	const render = async () => {
 		onUpdate(token, id);
-		if (lang === 'mermaid' && (token?.raw ?? '').slice(-4).includes('```')) {
+		if (markdown?.allowRemoteContent === false) return;
+		if (
+			lang === 'mermaid' &&
+			(markdown?.document || (token?.raw ?? '').slice(-4).includes('```'))
+		) {
 			try {
 				renderHTML = await renderMermaid(code);
 			} catch (error) {
@@ -376,7 +383,7 @@
 			}
 		} else if (
 			(lang === 'vega' || lang === 'vega-lite') &&
-			(token?.raw ?? '').slice(-4).includes('```')
+			(markdown?.document || (token?.raw ?? '').slice(-4).includes('```'))
 		) {
 			try {
 				renderHTML = await renderVegaVisualization(code, lang);
@@ -437,7 +444,7 @@
 		class="relative {className} flex flex-col rounded-2xl border border-gray-100/30 dark:border-gray-850/30 my-0.5 overflow-clip"
 		dir="ltr"
 	>
-		{#if ['mermaid', 'vega', 'vega-lite'].includes(lang)}
+		{#if markdown?.allowRemoteContent !== false && ['mermaid', 'vega', 'vega-lite'].includes(lang)}
 			{#if renderHTML}
 				<SvgPanZoom
 					className=" rounded-2xl max-h-fit overflow-hidden"
@@ -503,7 +510,7 @@
 							>
 								{$i18n.t('Running')}
 							</div>
-						{:else if run}
+						{:else if run && markdown?.allowRemoteContent !== false}
 							<button
 								class="run-code-button flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-normal text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 disabled:opacity-60 dark:text-gray-400 dark:hover:bg-gray-850 dark:hover:text-white"
 								on:click={async () => {
@@ -521,7 +528,7 @@
 
 					{#if save}
 						<button
-							class="save-code-button flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
+							class="save-code-button flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg px-2.5 text-xs font-normal text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 disabled:opacity-60 dark:text-gray-400 dark:hover:bg-gray-850 dark:hover:text-white"
 							on:click={saveCode}
 						>
 							{saved ? $i18n.t('Saved') : $i18n.t('Save')}
