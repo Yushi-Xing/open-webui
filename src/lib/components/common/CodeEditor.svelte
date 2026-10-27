@@ -79,6 +79,7 @@
 
 	export let id = '';
 	export let lang = '';
+	export let ariaLabel = '';
 
 	let codeEditor: EditorView | null = null;
 	let codeEditorContainerElement: HTMLDivElement | undefined = undefined;
@@ -225,6 +226,7 @@ print("${endTag}")
 	let extensions = [
 		basicSetup,
 		EditorView.contentAttributes.of({ tabindex: '0' }),
+		EditorView.contentAttributes.of(ariaLabel ? { 'aria-label': ariaLabel } : {}),
 		keymap.of([{ key: 'Tab', run: acceptCompletion }, indentWithTab]),
 		indentUnit.of('    '),
 		editorPlaceholder.of([]),

@@ -3,8 +3,8 @@
 All compilation and Docker image builds run in GitHub Actions. Do not run
 `npm run build`, Vite compilation, or `docker build` locally.
 
-The fork now includes upstream tag `v0.12.3` (commit
-`91ea4e3421d1d8069f13d4a463fcb5986d94ea60`) while retaining the customizations
+The fork now includes upstream tag `v0.12.4` (commit
+`33c1978d5bad52a31df75ea55143025dfad18d16`) while retaining the customizations
 below. Image checks validate both the source build hash and package version.
 
 The `Fork tests and Docker image` workflow tests prompt defaults, real TipTap
@@ -62,27 +62,25 @@ Additional rules for knowledge-based questions and fact-checking
 The file/terminal instruction requires an available tool to execute those actions;
 the prompt does not itself provide terminal access or guarantee model compliance.
 
-## Upstream fix review (v0.12.3)
+## Upstream fix review (v0.12.4)
 
-The October 21, 2026 review compared the official v0.12.3 source against
-v0.12.2 and the fork's changes:
+The October 27, 2026 review retains both fork behavior changes:
 
-- Titled-link paste loss is still present upstream: `RichTextInput.svelte`
-  defaults `link` to `false`, configures StarterKit's link extension only when
-  that flag is enabled, and `chat/MessageInput.svelte` does not enable it.
-  Rich-text paste therefore still drops an HTML anchor's `href`. The existing
-  editor regression reproduces that disabled-link configuration and checks
-  the fork's preserved Markdown URL. Keep the fork's prompt link extension.
-- Assistant code editing remains enabled upstream: `CodeBlock.svelte` defaults
-  `edit` to `true` and `ResponseMessage.svelte` forwards
-  `editCodeBlock={!readOnly && editCodeBlock}`. Keep the read-only CodeMirror
-  customization and its editor/browser regressions.
-- Scale 1.2, the supplied Markdown CSS and the appended system rules are user
-  preferences, rather than upstream bug fixes. All remain in the fork.
+- `RichTextInput.svelte` still defaults links off and the chat input does not
+  enable them. Keep `PromptLink` and the Markdown URL preservation regressions.
+- Assistant code blocks still default to editable upstream. Upstream now uses
+  read-only CodeMirror when remote Markdown content is disabled; the fork uses
+  that renderer for all ordinary read-only code blocks, preserving its earlier
+  behavior. The one merge conflict in this renderer was resolved accordingly.
+- Scale 1.2, the supplied Markdown CSS and appended system rules remain intact.
+- Test store fixtures now include upstream's new `visibleControls` store.
+- Upstream's image base changed to Python 3.12 / Debian trixie. Both native
+  architecture images must pass the existing startup and HTTP checks in Actions.
 
-The source merged without conflicts. The encryption module's committed artifact
-and source checksums are verified without rebuilding it. Component/editor/browser
-regressions and production/image compilation run only in GitHub Actions.
+See [context-compaction-analysis.md](context-compaction-analysis.md) for the
+source-backed analysis of search-result context overflows. v0.12.4 improves
+short-chat and temporary-chat compaction but does not provide a strict provider
+context-window guard. This sync does not change its compaction implementation.
 
 ## Update the existing deployment
 

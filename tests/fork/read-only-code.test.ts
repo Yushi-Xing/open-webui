@@ -4,7 +4,7 @@ import { writable } from 'svelte/store';
 
 vi.mock('$lib/stores', async () => {
 	const { writable } = await import('svelte/store');
-	return { config: writable({}), pyodideWorker: writable(null) };
+	return { config: writable({}), pyodideWorker: writable(null), visibleControls: writable({}) };
 });
 vi.mock('svelte-sonner', () => ({ toast: { error: vi.fn() } }));
 vi.mock('$lib/utils', () => ({

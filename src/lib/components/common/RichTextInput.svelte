@@ -413,7 +413,7 @@
 		});
 	}
 
-	$: if (value === null && html !== null && editor) {
+	$: if (value === null && html !== null && editor && !provider) {
 		editor.commands.setContent(html);
 	}
 
@@ -580,7 +580,10 @@
 							const display = (label || slashSkillLabel)?.length
 								? label || slashSkillLabel
 								: mentionId;
-							return `<span class="mention" data-type="mention" data-id="${mentionId}" data-label="${display}" data-mention-suggestion-char="${mentionChar}">${mentionChar}${display}</span>`;
+							const dataId = (label || slashSkillLabel)?.length
+								? `${mentionId}|${display}`
+								: mentionId;
+							return `<span class="mention" data-type="mention" data-id="${dataId}" data-label="${display}" data-mention-suggestion-char="${mentionChar}">${mentionChar}${display}</span>`;
 						}
 					);
 					return `<p>${withMentions}</p>`;
@@ -1048,7 +1051,12 @@
 			editorProps: {
 				// the tiptap placeholder never becomes the field's accessible name;
 				// function form so a placeholder change is picked up after mount
-				attributes: () => ({ id, 'aria-label': _placeholder }),
+				attributes: () => ({
+					id,
+					role: 'textbox',
+					'aria-multiline': 'true',
+					'aria-label': _placeholder
+				}),
 				transformPasted: (slice) => {
 					const stripMentionLinks = (fragment: Fragment): Fragment => {
 						const nodes: Node[] = [];
