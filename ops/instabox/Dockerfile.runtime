@@ -1,0 +1,29 @@
+# Stage production assets and runtime-venv into the project directory first.
+ARG TOOLCHAIN_IMAGE=local/build-open-webui:py312-node22-v1
+FROM ${TOOLCHAIN_IMAGE}
+ARG BUILD_HASH
+LABEL org.opencontainers.image.source="https://github.com/Yushi-Xing/open-webui"
+LABEL org.opencontainers.image.revision=${BUILD_HASH}
+ENV ENV=prod PORT=8080 USE_OLLAMA_DOCKER=false USE_CUDA_DOCKER=false \
+    WEBUI_BUILD_HASH=${BUILD_HASH} DOCKER=true \
+    PATH=/work/cache/runtime-venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
+    DATA_DIR=/app/backend/data TIKTOKEN_CACHE_DIR=/app/backend/data/cache/tiktoken \
+    TIKTOKEN_ENCODING_NAME=cl100k_base \
+    USE_EMBEDDING_MODEL_DOCKER=sentence-transformers/all-MiniLM-L6-v2 \
+    USE_AUXILIARY_EMBEDDING_MODEL_DOCKER=TaylorAI/bge-micro-v2 \
+    WHISPER_MODEL=base WHISPER_MODEL_DIR=/app/backend/data/cache/whisper \
+    SENTENCE_TRANSFORMERS_HOME=/app/backend/data/cache/embedding/models \
+    HF_HOME=/app/backend/data/cache/embedding/models \
+    RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2 \
+    AUXILIARY_EMBEDDING_MODEL=TaylorAI/bge-micro-v2 \
+    PYTHONUNBUFFERED=1
+WORKDIR /app/backend
+COPY cache/runtime-venv /work/cache/runtime-venv
+COPY src/build /app/build
+COPY src/backend /app/backend
+COPY src/package.json src/CHANGELOG.md src/LICENSE src/LICENSE_NOTICE /app/
+RUN mkdir -p /app/backend/data/cache/tiktoken \
+    && python -c 'import tiktoken; tiktoken.get_encoding("cl100k_base")'
+EXPOSE 8080
+HEALTHCHECK CMD curl --silent --fail http://localhost:8080/health | jq -ne 'input.status == true' || exit 1
+CMD ["bash", "start.sh"]

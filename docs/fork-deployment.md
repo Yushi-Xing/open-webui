@@ -1,7 +1,11 @@
 # Custom Open WebUI deployment
 
-All compilation and Docker image builds run in GitHub Actions. Do not run
-`npm run build`, Vite compilation, or `docker build` locally.
+Do not run frontend or Docker builds on the local control machine. The current
+authorized builder is the existing InstaBox `compile-server`, following
+[its project recipe](../ops/instabox/AGENTS.md). Compilation, dependency installs
+and tests run in `build-open-webui`; image assembly runs on that remote host.
+Only clean source is uploaded, and publication uses the control machine.
+The older manual Actions workflow remains available but is not used for this run.
 
 The fork now includes upstream tag `v0.12.4` (commit
 `33c1978d5bad52a31df75ea55143025dfad18d16`) while retaining the customizations

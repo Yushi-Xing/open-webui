@@ -1,0 +1,26 @@
+services:
+  open-webui:
+    image: local/build-open-webui:py312-node22-v1
+    container_name: build-open-webui
+    user: "1000:1000"
+    working_dir: /work/src
+    init: true
+    command: ["sleep", "infinity"]
+    restart: "no"
+    mem_limit: 6g
+    cpus: 4
+    shm_size: 512m
+    environment:
+      HOME: /work/cache/home
+      npm_config_cache: /work/cache/npm
+      CYPRESS_INSTALL_BINARY: "0"
+      PLAYWRIGHT_BROWSERS_PATH: /work/cache/playwright
+      UV_CACHE_DIR: /work/cache/uv
+      TIKTOKEN_CACHE_DIR: /work/cache/tiktoken
+    volumes:
+      - ./src:/work/src
+      - ./cache:/work/cache
+      - ./cache/node_modules:/work/src/node_modules
+      - ./artifacts:/work/artifacts
+      - ./logs:/work/logs
+      - ./scripts:/work/scripts:ro
