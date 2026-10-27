@@ -31,6 +31,7 @@ from open_webui.utils.filter import (
     get_filter_functions,
     process_filter_functions,
 )
+from open_webui.utils.context_compaction import enforce_context_budget
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.models import check_model_access, get_all_models
 from open_webui.utils.payload import apply_system_prompt_to_body, convert_payload_openai_to_ollama
@@ -193,6 +194,7 @@ async def generate_chat_completion(
         raise Exception('Model not found')
 
     if getattr(request.state, 'direct', False) and model_id == getattr(request.state, 'model', {}).get('id'):
+        await enforce_context_budget(request, form_data, user, models, bypass_system_prompt=bypass_system_prompt)
         return await generate_direct_chat_completion(request, form_data, user=user, models=models)
     else:
         # Check if user has access to the model
@@ -276,6 +278,8 @@ async def generate_chat_completion(
                 if not isinstance(response, dict):
                     return response
                 return {**response, 'selected_model_id': selected_model_id}
+
+        await enforce_context_budget(request, form_data, user, models, bypass_system_prompt=bypass_system_prompt)
 
         if model.get('pipe'):
             # Below does not require bypass_filter because this is the only route the uses this function and it is already bypassing the filter

@@ -1476,6 +1476,14 @@ async def generate_chat_completion(
 
     url, key, api_config = await get_openai_connection(idx)
 
+    # Recheck after model presets and rendered system variables, before
+    # provider-specific conversion. These can enlarge an otherwise safe chat.
+    from open_webui.utils.context_compaction import enforce_context_budget
+
+    budget_payload = {**payload, 'model': form_data['model'], 'metadata': metadata or {}}
+    await enforce_context_budget(request, budget_payload, user, request.app.state.MODELS, bypass_system_prompt=True)
+    payload['messages'] = budget_payload.get('messages', [])
+
     prefix_id = api_config.get('prefix_id', None)
     payload['model'] = strip_provider_model_prefix(payload['model'], prefix_id)
 

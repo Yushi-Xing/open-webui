@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import logging
 import re
+from collections import deque
 from typing import Any
 
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from open_webui.models.chats import Chats
 from open_webui.models.config import Config
 from open_webui.utils.chat_id import is_saved_chat_id
+from open_webui.utils.context_tokens import estimate_text_tokens, split_text_to_budget
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.misc import get_content_from_message, get_last_user_message, get_message_list
 from open_webui.utils.payload import apply_params_to_form_data
@@ -28,6 +33,7 @@ Summarize the conversation history that will be compacted out of the active chat
 ### Instructions:
 - Preserve key decisions, user preferences, and constraints.
 - Preserve files, artifacts, tool results, and code changes that matter going forward.
+- Preserve relevant source URLs, citation identifiers, errors, and exact values needed for the task.
 - Preserve the current task state, unresolved questions, and next steps.
 - Be factual and specific. Do not invent details.
 - Keep the summary concise, but complete enough for the assistant to continue without the removed messages.
@@ -50,6 +56,9 @@ async def compact_messages_for_request(
     model_id: str,
     models: dict,
     system_prompt: str = '',
+    *,
+    token_threshold: int | None = None,
+    persist: bool = True,
 ) -> tuple[list[dict], str | None, bool]:
     config = await _load_config()
     if not config['enable']:
@@ -60,18 +69,30 @@ async def compact_messages_for_request(
 
     messages, previous_summary = _apply_latest_summary_checkpoint(messages)
     system_prompt = system_prompt or (get_content_from_message(system_messages[0]) if system_messages else '')
-    token_threshold = _resolve_token_threshold(config['token_threshold'], config['token_cap'], metadata)
+    token_threshold = token_threshold or _resolve_token_threshold(
+        config['token_threshold'], config['token_cap'], metadata
+    )
     if not _exceeds_token_threshold(messages, system_prompt, previous_summary, token_threshold):
         return [*system_messages, *messages], previous_summary, False
 
-    boundary = _find_compaction_boundary(messages, config['retention_percentage'])
+    boundary = _find_compaction_boundary(messages, config['retention_percentage'], token_threshold)
     compacted_messages = messages[:boundary]
     recent_messages = messages[boundary:]
     if not compacted_messages or not recent_messages:
         return [*system_messages, *messages], previous_summary, False
 
+    # A tool boundary can fall after the current question. Keep the exact
+    # question alongside its call/result batch, rather than only in a summary.
+    if recent_messages[0].get('role') != 'user':
+        latest_user = next((m for m in reversed(messages) if m.get('role') == 'user'), None)
+        if latest_user is not None and any(m is latest_user for m in compacted_messages):
+            recent_messages = [latest_user, *recent_messages]
+            compacted_messages = [m for m in compacted_messages if m is not latest_user]
+            if not compacted_messages:
+                return [*system_messages, *messages], previous_summary, False
+
     event_emitter = None
-    if metadata.get('chat_id') and metadata.get('message_id'):
+    if persist and metadata.get('chat_id') and metadata.get('message_id'):
         from open_webui.socket.main import get_event_emitter
 
         event_emitter = await get_event_emitter(metadata)
@@ -119,7 +140,7 @@ async def compact_messages_for_request(
         recent_messages[0].get('id') or metadata.get('user_message_id') or metadata.get('message_id')
     )
     # Only whole-turn user boundaries correspond to persisted chat checkpoints.
-    if recent_messages[0].get('role') == 'user' and is_saved_chat_id(chat_id) and checkpoint_message_id:
+    if persist and recent_messages[0].get('role') == 'user' and is_saved_chat_id(chat_id) and checkpoint_message_id:
         await Chats.upsert_message_to_chat_by_id_and_message_id(
             chat_id,
             checkpoint_message_id,
@@ -146,7 +167,7 @@ async def compact_messages_for_request(
                     'description': 'Context compacted',
                     'done': True,
                     'checkpoint_message_id': (
-                        recent_messages[0].get('id') if recent_messages[0].get('role') == 'user' else None
+                        recent_messages[0].get('id') if persist and recent_messages[0].get('role') == 'user' else None
                     ),
                     'context_summary': summary,
                 },
@@ -356,34 +377,111 @@ def _exceeds_token_threshold(messages: list[dict], system_prompt: str, summary: 
     if threshold <= 0:
         return False
 
+    estimated = _estimate_tokens(system_prompt) + _estimate_tokens(summary or '') + _estimate_messages_tokens(messages)
     for idx in range(len(messages) - 1, -1, -1):
         usage = messages[idx].get('usage') or (messages[idx].get('info') or {}).get('usage')
         if isinstance(usage, dict) and (tokens := _usage_token_count(usage)):
-            return tokens + _estimate_messages_tokens(messages[idx + 1 :]) > threshold
+            return max(estimated, tokens + _estimate_messages_tokens(messages[idx + 1 :])) > threshold
 
-    estimated = _estimate_tokens(system_prompt) + _estimate_tokens(summary or '') + _estimate_messages_tokens(messages)
     return estimated > threshold
 
 
-def _find_compaction_boundary(messages: list[dict], retention_percentage: int = 40) -> int:
+def _find_compaction_boundary(
+    messages: list[dict], retention_percentage: int = 40, token_budget: int | None = None
+) -> int:
     retention_percentage = _clamp_retention_percentage(retention_percentage)
     keep_count = max(2, len(messages) * retention_percentage // 100)
     target = max(1, len(messages) - keep_count)
-    if any(message.get('role') == 'tool' for message in messages):
-        # Keep each call/result batch and its following image messages together.
-        boundaries = [
-            idx
-            for idx, message in enumerate(messages)
-            if message.get('role') == 'assistant' and message.get('tool_calls')
-        ][1:]
-    else:
-        boundaries = [idx for idx, message in enumerate(messages) if message.get('role') == 'user'][1:]
-        # The first later user turn stays a valid boundary even inside the retained share.
-        target = max(target, min(boundaries, default=0))
-    return next((idx for idx in reversed(boundaries) if idx <= target), 0)
+    boundaries = []
+    pending = set()
+    for idx, message in enumerate(messages):
+        calls = message.get('tool_calls') or []
+        # A real user turn or the start of a complete call/result batch is a
+        # safe cut. Generated user image messages stay with their tool batch.
+        content = message.get('content')
+        tool_images = (
+            isinstance(content, list)
+            and content
+            and isinstance(content[0], dict)
+            and content[0].get('text') == 'Here are the images from the tool results above. Please analyze them.'
+        )
+        user_turn = message.get('role') == 'user' and not tool_images
+        if idx and not pending and (user_turn or (message.get('role') == 'assistant' and calls)):
+            boundaries.append(idx)
+        if message.get('role') == 'assistant':
+            pending.update(call['id'] for call in calls if call.get('id'))
+        elif message.get('role') == 'tool':
+            pending.discard(message.get('tool_call_id'))
+    target = max(target, min(boundaries, default=0))
+    boundary = next((idx for idx in reversed(boundaries) if idx <= target), 0)
+    if boundary and token_budget:
+        # Retaining 40% of messages need not retain 40% of tokens. Advance to
+        # another safe boundary when the retained portion alone is too large.
+        for candidate in boundaries:
+            if candidate >= boundary:
+                boundary = candidate
+                if _estimate_messages_tokens(messages[candidate:]) <= token_budget * 3 // 4:
+                    break
+    return boundary
+
+
+class _SummaryInputTooLarge(ValueError):
+    pass
 
 
 async def _generate_summary(
+    request, user, model_id, models, compacted_messages, recent_messages, previous_summary, summary_prompt_template
+) -> str:
+    # A summary must not send the same oversized input to the same short-window
+    # model. Try the original template first, then fold bounded chunks in order.
+    config = await _load_config()
+    budget = min(config['token_threshold'], config['token_cap'], 16000)
+    args = (request, user, model_id, models)
+    try:
+        return await _generate_summary_once(
+            *args, compacted_messages, recent_messages, previous_summary, summary_prompt_template, budget
+        )
+    except _SummaryInputTooLarge:
+        pass
+
+    text_parts = [previous_summary] if previous_summary else []
+    for message in compacted_messages:
+        text_parts.append(f'[{message.get("role", "unknown")}] {get_content_from_message(message) or ""}')
+        if message.get('tool_calls'):
+            text_parts.append('[TOOL CALLS] ' + JSONCodec.dumps(message['tool_calls'], ensure_ascii=False))
+    text = '\n'.join(text_parts)
+    # Recent messages remain in the main request. A bounded preview supplies
+    # continuity to the summarizer without duplicating a huge retained result.
+    question = get_last_user_message(recent_messages) or ''
+    preview_budget = max(4, min(2048, budget // 8))
+    if _estimate_tokens(question) > preview_budget:
+        head = next(split_text_to_budget(question, max(4, preview_budget // 2)))
+        tail = next(split_text_to_budget(question[::-1], max(4, preview_budget // 2)))[::-1]
+        question = head + '\n[Summary context preview shortened]\n' + tail
+    recent = [{'role': 'user', 'content': question}] if question else []
+    chunks = deque(split_text_to_budget(text, max(4, budget * 3 // 4)))
+    summary = None
+    calls = 0
+    while chunks:
+        if calls >= 64:
+            raise ValueError('Context requires too many summary chunks; reduce attached content')
+        chunk = chunks.popleft()
+        try:
+            summary = await _generate_summary_once(
+                *args, [{'role': 'user', 'content': chunk}], recent, summary, summary_prompt_template, budget
+            )
+            calls += 1
+        except _SummaryInputTooLarge:
+            if len(chunk) <= 1:
+                raise ValueError('Compaction prompt or previous summary exceeds the summary input budget')
+            mid = len(chunk) // 2
+            chunks.extendleft([chunk[mid:], chunk[:mid]])
+    if not summary:
+        raise ValueError('No content could be summarized within the context budget')
+    return summary
+
+
+async def _generate_summary_once(
     request,
     user,
     model_id: str,
@@ -392,6 +490,7 @@ async def _generate_summary(
     recent_messages: list[dict],
     previous_summary: str | None,
     summary_prompt_template: str,
+    input_budget: int,
 ) -> str:
     from open_webui.utils.chat import generate_chat_completion
 
@@ -432,6 +531,12 @@ async def _generate_summary(
     task_model_params = task_model_params or {
         'max_tokens': models[task_model_id].get('info', {}).get('params', {}).get('max_tokens', 1000)
     }
+    output_budget = max(1, min(1000, input_budget // 8))
+    output_keys = [
+        key for key in ('max_tokens', 'max_completion_tokens', 'max_output_tokens') if key in task_model_params
+    ]
+    for key in output_keys or ['max_tokens']:
+        task_model_params[key] = min(_parse_positive_int(task_model_params.get(key)) or output_budget, output_budget)
 
     payload = {
         'model': task_model_id,
@@ -440,21 +545,228 @@ async def _generate_summary(
         'metadata': {
             **(request.state.metadata if hasattr(request.state, 'metadata') else {}),
             'task': 'context_compaction',
+            '_context_compaction_input_budget': input_budget,
         },
     }
 
     payload = apply_params_to_form_data(payload, models[task_model_id], task_model_params)
-    response = await generate_chat_completion(request, form_data=payload, user=user)
+    model_system = (models[task_model_id].get('info', {}).get('params') or {}).get('system') or ''
+    if _estimate_messages_tokens(payload['messages']) + _estimate_tokens(model_system) > input_budget:
+        raise _SummaryInputTooLarge('Summary prompt exceeds its input budget')
+    # The dispatcher/provider router store per-call flags on request.state.
+    # An internal summary must not reset the parent tool continuation's flags.
+    missing = object()
+    state_before = {
+        key: getattr(request.state, key, missing) for key in ('bypass_filter', 'bypass_system_prompt', 'model_id')
+    }
+    try:
+        response = await generate_chat_completion(request, form_data=payload, user=user)
+    finally:
+        for key, value in state_before.items():
+            if value is missing:
+                if hasattr(request.state, key):
+                    delattr(request.state, key)
+            else:
+                setattr(request.state, key, value)
+    if (isinstance(response, JSONResponse) and response.status_code >= 400) or (
+        isinstance(response, dict) and response.get('error')
+    ):
+        raise ValueError('Context summary request failed')
     summary = _response_text(response).strip()
-    if summary:
+    if summary and _estimate_tokens(summary) <= max(1, input_budget // 4):
         return summary
+    raise ValueError('Context summary was empty or exceeded its output budget')
 
-    parts = [previous_summary] if previous_summary else []
-    for message in compacted_messages:
-        content = get_content_from_message(message)
-        if content:
-            parts.append(f'- {message.get("role", "unknown")}: {content[:500]}')
-    return '\n'.join(parts)[:4000]
+
+SOURCE_BODY_RE = re.compile(r'(<source\b[^>]*>)(.*?)(</source>)', re.DOTALL)
+
+
+async def enforce_context_budget(request, form_data: dict, user, models: dict, *, bypass_system_prompt=False):
+    """Check the rendered request, including search results and tool schemas.
+
+    Mutate only the outgoing payload. Persisted user text, tool results and
+    citations stay intact; reductions here must not create DB checkpoints.
+    """
+    metadata = form_data.get('metadata') or {}
+    summary_task = metadata.get('task') == 'context_compaction'
+    if (metadata.get('task') and not summary_task) or (not metadata.get('chat_id') and not summary_task):
+        return
+    config = await _load_config()
+    if not config['enable']:
+        return
+
+    budget = _resolve_token_threshold(config['token_threshold'], config['token_cap'], metadata)
+    model_id = form_data['model']
+    model = models.get(model_id) or {}
+    model_params = model.get('info', {}).get('params') or {}
+    model_system = '' if bypass_system_prompt else model_params.get('system') or ''
+    output_reserve = max(
+        (_parse_positive_int(form_data.get(key)) or _parse_positive_int(model_params.get(key)) or 0)
+        for key in ('max_tokens', 'max_completion_tokens', 'max_output_tokens')
+    )
+    extra_tokens = (
+        output_reserve
+        + _estimate_tokens(model_system)
+        + sum(_estimate_tokens(form_data.get(key)) for key in ('tools', 'functions', 'tool_choice', 'response_format'))
+    )
+
+    def size(messages):
+        # Freshly count the actual payload: old usage predates search/RAG,
+        # model instructions, schema changes, and possibly earlier reductions.
+        return extra_tokens + _estimate_messages_tokens(messages)
+
+    original = form_data.get('messages') or []
+    if summary_task:
+        # Validate task requests too, including model-preset variable expansion
+        # in the provider router, but never recursively summarize a summary.
+        summary_budget = min(_parse_positive_int(metadata.get('_context_compaction_input_budget')) or 16000, 16000)
+        if size(original) - output_reserve > summary_budget:
+            raise _SummaryInputTooLarge('Rendered summary request exceeds its input budget')
+        return
+    if size(original) <= budget:
+        return
+
+    event_emitter = None
+    if metadata.get('message_id'):
+        from open_webui.socket.main import get_event_emitter
+
+        event_emitter = await get_event_emitter(metadata)
+
+    async def progress(description, *, done=False, error=False):
+        if event_emitter:
+            await event_emitter(
+                {
+                    'type': 'context_compaction',
+                    'data': {
+                        'action': 'context_compaction',
+                        'description': description,
+                        'done': done,
+                        'error': error,
+                    },
+                }
+            )
+
+    try:
+        await progress('Compacting context')
+        messages = copy.deepcopy(original)
+        systems = [m for m in messages if m.get('role') in {'system', 'developer'}]
+        history = [m for m in messages if m.get('role') not in {'system', 'developer'}]
+        available = budget - size(systems)
+        summary, compacted = None, False
+        if available > 32:
+            history, summary, compacted = await compact_messages_for_request(
+                request, user, history, metadata, model_id, models, token_threshold=available, persist=False
+            )
+        if compacted and summary:
+            systems.append({'role': 'system', 'content': '[CONVERSATION SUMMARY]\n' + summary})
+        messages = [*systems, *history]
+
+        # Reduce only tool result text and server-injected source bodies. Never
+        # shorten the actual user question, tool arguments, IDs, or images.
+        question = metadata.get('base_user_prompt') or get_last_user_message(history) or ''
+        cache = metadata.setdefault('_context_result_summaries', {})
+
+        async def summarize(text):
+            key = hashlib.sha256(text.encode('utf-8', errors='replace')).hexdigest()
+            if key not in cache:
+                cache[key] = await _generate_summary(
+                    request,
+                    user,
+                    model_id,
+                    models,
+                    [{'role': 'tool', 'content': text}],
+                    [{'role': 'user', 'content': question}],
+                    None,
+                    config['prompt_template'],
+                )
+            result = (
+                '[Summarized to fit context; original tool results and source references are unchanged]\n' + cache[key]
+            )
+            if _estimate_tokens(result) >= _estimate_tokens(text):
+                raise ValueError('A tool/source summary did not reduce the context')
+            return result
+
+        candidates = []
+        for message in messages:
+            content = message.get('content')
+            if message.get('role') == 'tool':
+                if isinstance(content, str):
+                    candidates.append((message, 'content', content))
+                elif isinstance(content, list):
+                    candidates.extend(
+                        (part, 'text', part['text'])
+                        for part in content
+                        if isinstance(part, dict) and isinstance(part.get('text'), str)
+                    )
+            elif metadata.get('sources') and isinstance(content, str):
+                # Protect the literal question if it itself contains <source>
+                # examples. Only the injected portion preceding it is eligible.
+                protected_at = content.rfind(question) if question else -1
+                if message.get('role') == 'user' and protected_at < 0:
+                    continue
+                source_text = content[:protected_at] if protected_at >= 0 else content
+                for match in SOURCE_BODY_RE.finditer(source_text):
+                    candidates.append((message, match, match[2]))
+
+        # Apply source replacements in one pass after collection; offsets stay
+        # tied to the original content even when several bodies are summarized.
+        replacements = {}
+        for target, field, text in sorted(candidates, key=lambda item: _estimate_tokens(item[2]), reverse=True):
+            if size(messages) <= budget:
+                break
+            if _estimate_tokens(text) <= 256:
+                continue
+            result = await summarize(text)
+            if isinstance(field, str):
+                target[field] = result
+            else:
+                identity = id(target)
+                entry = replacements.setdefault(identity, (target, target['content'], {}))
+                entry[2][field.span(2)] = result
+                content = entry[1]
+                for (start, end), replacement in sorted(entry[2].items(), reverse=True):
+                    content = content[:start] + replacement + content[end:]
+                target['content'] = content
+
+        # Source bodies may initially fill the system prompt. Once those have
+        # been reduced, history can have a usable budget for the first time.
+        if size(messages) > budget and available <= 32:
+            systems = [m for m in messages if m.get('role') in {'system', 'developer'}]
+            history = [m for m in messages if m.get('role') not in {'system', 'developer'}]
+            available = budget - size(systems)
+            if available > 32:
+                history, summary, compacted = await compact_messages_for_request(
+                    request, user, history, metadata, model_id, models, token_threshold=available, persist=False
+                )
+                if compacted and summary:
+                    systems.append({'role': 'system', 'content': '[CONVERSATION SUMMARY]\n' + summary})
+                messages = [*systems, *history]
+
+        final_size = size(messages)
+        if final_size > budget:
+            raise ValueError(f'Protected conversation content still needs about {final_size} tokens (budget {budget})')
+        # Commit only after every reduction and the final check succeeds.
+        form_data['messages'] = messages
+        await progress('Context compacted', done=True)
+        log.info(
+            'Context budget enforced: chat=%s estimated_before=%d estimated_after=%d budget=%d',
+            metadata.get('chat_id'),
+            size(original),
+            final_size,
+            budget,
+        )
+    except Exception as exc:
+        await progress('Context compaction failed', done=True, error=True)
+        log.warning(
+            'Context budget could not be satisfied for chat=%s: %s', metadata.get('chat_id'), type(exc).__name__
+        )
+        raise HTTPException(
+            status_code=400,
+            detail='Context could not be compacted within the configured token budget. '
+            'Reduce attached/search content or the output limit, select a larger-context compaction model, '
+            'or start a new chat. '
+            'The oversized request was not sent to the model.',
+        ) from exc
 
 
 def _response_text(response: Any) -> str:
@@ -521,4 +833,4 @@ def _estimate_tokens(value: Any) -> int:
     if not value:
         return 0
 
-    return max(1, len(value) // 4)
+    return estimate_text_tokens(value)

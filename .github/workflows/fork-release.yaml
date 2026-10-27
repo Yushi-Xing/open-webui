@@ -22,6 +22,10 @@ jobs:
       CYPRESS_INSTALL_BINARY: '0'
     steps:
       - uses: actions/checkout@v5
+      - name: Test final context budgets and bounded compaction
+        run: |
+          python3 -m pip install --target "$RUNNER_TEMP/context-test" --only-binary=:all: --disable-pip-version-check tiktoken==0.13.0
+          PYTHONPATH="$RUNNER_TEMP/context-test" python3 -m unittest discover -s tests/fork -p 'test_context_*.py' -v
       - uses: actions/setup-node@v5
         with:
           node-version: '22'

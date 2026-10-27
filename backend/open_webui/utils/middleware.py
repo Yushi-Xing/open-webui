@@ -5924,7 +5924,15 @@ async def streaming_chat_response_handler(response, ctx):
                             'metadata': metadata,
                         }
 
-                        if ENABLE_RESPONSES_API_STATEFUL and last_response_id:
+                        # Provider-side history cannot be sized or compacted
+                        # locally. Keep the full messages path when compaction
+                        # is enabled so every tool continuation is budgeted.
+                        compaction_enabled = await Config.get('chat.context_compaction.enable')
+                        if (
+                            ENABLE_RESPONSES_API_STATEFUL
+                            and last_response_id
+                            and not compaction_enabled
+                        ):
                             system_message = get_system_message(form_data['messages'])
                             new_form_data['messages'] = (
                                 [system_message] if system_message else []
@@ -5933,6 +5941,8 @@ async def streaming_chat_response_handler(response, ctx):
                             )
                             new_form_data['previous_response_id'] = last_response_id
                         else:
+                            if compaction_enabled:
+                                new_form_data.pop('previous_response_id', None)
                             tool_messages = convert_output_to_messages(
                                 output,
                                 raw=True,

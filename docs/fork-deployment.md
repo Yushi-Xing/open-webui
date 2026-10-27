@@ -78,9 +78,12 @@ The October 27, 2026 review retains both fork behavior changes:
   architecture images must pass the existing startup and HTTP checks in Actions.
 
 See [context-compaction-analysis.md](context-compaction-analysis.md) for the
-source-backed analysis of search-result context overflows. v0.12.4 improves
-short-chat and temporary-chat compaction but does not provide a strict provider
-context-window guard. This sync does not change its compaction implementation.
+source-backed analysis and fork fix for search-result context overflows. With
+context compaction enabled, the fork checks rendered requests, summarizes large
+source/tool text in bounded chunks, and stops requests that cannot fit the
+configured budget. User input, tool pairing and source identifiers are retained.
+Provider token counts remain estimates; use a threshold below the actual API
+limit. The manual release workflow includes focused backend regressions.
 
 ## Update the existing deployment
 
