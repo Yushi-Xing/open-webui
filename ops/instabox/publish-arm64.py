@@ -32,6 +32,7 @@ def main():
     args = parser.parse_args()
     bundle = args.bundle.resolve()
     record = json.loads((bundle / 'registry-record.json').read_text())
+    assert record['image'] == 'ghcr.io/yushi-xing/open-webui:git-' + record['source_commit'][:12] + '-arm64'
     assert record['platform']['architecture'] == 'arm64'
     assert record['verification']['backend_regressions'] == 31
     assert all(record['verification'][key] for key in ('health', 'version', 'original_css', 'budget_guard', 'all_layer_diff_ids_verified'))
@@ -39,6 +40,10 @@ def main():
     for path in blobs.iterdir():
         assert path.is_file() and not path.is_symlink() and digest(path) == 'sha256:' + path.name
     manifest = json.loads((blobs / record['manifest_digest'].split(':')[1]).read_text())
+    transfer_index = json.loads((bundle / 'index.json').read_text())
+    assert len(transfer_index['manifests']) == 1
+    assert transfer_index['manifests'][0]['digest'] == record['manifest_digest']
+    assert transfer_index['manifests'][0]['platform'] == record['platform']
     config = json.loads((blobs / record['config_digest'].split(':')[1]).read_text())
     assert config['architecture'] == 'arm64' and config['os'] == 'linux'
     assert config['config']['Labels']['org.opencontainers.image.revision'] == record['source_commit']
