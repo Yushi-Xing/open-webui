@@ -48,6 +48,16 @@ Summarize the conversation history that will be compacted out of the active chat
 {{RECENT_MESSAGES}}"""
 
 
+async def _emit_compaction_event(event_emitter, event):
+    if event_emitter:
+        try:
+            await event_emitter(event)
+        except Exception as exc:
+            # A broken progress channel must not abort a successful compaction.
+            # Do not log transport exception text, which can contain credentials.
+            log.warning('Context compaction progress notification failed: %s', type(exc).__name__)
+
+
 async def compact_messages_for_request(
     request,
     user,
@@ -98,7 +108,8 @@ async def compact_messages_for_request(
         event_emitter = await get_event_emitter(metadata)
 
     if event_emitter:
-        await event_emitter(
+        await _emit_compaction_event(
+            event_emitter,
             {
                 'type': 'context_compaction',
                 'data': {
@@ -106,7 +117,7 @@ async def compact_messages_for_request(
                     'description': 'Compacting context',
                     'done': False,
                 },
-            }
+            },
         )
 
     try:
@@ -122,7 +133,8 @@ async def compact_messages_for_request(
         )
     except Exception:
         if event_emitter:
-            await event_emitter(
+            await _emit_compaction_event(
+                event_emitter,
                 {
                     'type': 'context_compaction',
                     'data': {
@@ -131,7 +143,7 @@ async def compact_messages_for_request(
                         'done': True,
                         'error': True,
                     },
-                }
+                },
             )
         raise
 
@@ -159,7 +171,8 @@ async def compact_messages_for_request(
     )
 
     if event_emitter:
-        await event_emitter(
+        await _emit_compaction_event(
+            event_emitter,
             {
                 'type': 'context_compaction',
                 'data': {
@@ -171,7 +184,7 @@ async def compact_messages_for_request(
                     ),
                     'context_summary': summary,
                 },
-            }
+            },
         )
 
     return [*system_messages, *recent_messages], summary, True
@@ -307,12 +320,8 @@ async def get_chat_context_usage(chat: Any, model_id: str | None = None) -> dict
     threshold = _resolve_token_threshold(config['token_threshold'], config['token_cap'], {'params': params})
     messages, previous_summary = _apply_latest_summary_checkpoint(messages)
 
-    for idx in range(len(messages) - 1, -1, -1):
-        usage = messages[idx].get('usage') or (messages[idx].get('info') or {}).get('usage')
-        if isinstance(usage, dict) and (tokens := _usage_token_count(usage)):
-            tokens += _estimate_messages_tokens(messages[idx + 1 :])
-            return _build_context_usage(tokens, threshold)
-
+    # Stored usage describes an earlier provider request, including history
+    # that a checkpoint may have removed. Count the active branch instead.
     tokens = _estimate_tokens(previous_summary or '') + _estimate_messages_tokens(messages)
     return _build_context_usage(tokens, threshold)
 
@@ -377,13 +386,13 @@ def _exceeds_token_threshold(messages: list[dict], system_prompt: str, summary: 
     if threshold <= 0:
         return False
 
-    estimated = _estimate_tokens(system_prompt) + _estimate_tokens(summary or '') + _estimate_messages_tokens(messages)
-    for idx in range(len(messages) - 1, -1, -1):
-        usage = messages[idx].get('usage') or (messages[idx].get('info') or {}).get('usage')
-        if isinstance(usage, dict) and (tokens := _usage_token_count(usage)):
-            return max(estimated, tokens + _estimate_messages_tokens(messages[idx + 1 :])) > threshold
-
-    return estimated > threshold
+    # Provider usage is a receipt for a past request, not the size of this
+    # branch after checkpoint replay. An old large receipt otherwise causes
+    # the same compacted history to be summarized again on every follow-up.
+    return (
+        _estimate_tokens(system_prompt) + _estimate_tokens(summary or '') + _estimate_messages_tokens(messages)
+        > threshold
+    )
 
 
 def _find_compaction_boundary(
@@ -429,6 +438,14 @@ class _SummaryInputTooLarge(ValueError):
     pass
 
 
+class _CompactionFailure(ValueError):
+    def __init__(self, code: str, reason: str, provider_status: int | None = None):
+        self.code = code
+        self.reason = reason
+        self.provider_status = provider_status
+        super().__init__(reason)
+
+
 async def _generate_summary(
     request, user, model_id, models, compacted_messages, recent_messages, previous_summary, summary_prompt_template
 ) -> str:
@@ -464,7 +481,7 @@ async def _generate_summary(
     calls = 0
     while chunks:
         if calls >= 64:
-            raise ValueError('Context requires too many summary chunks; reduce attached content')
+            raise _CompactionFailure('summary_chunk_limit', 'Context requires more than 64 summary chunks.')
         chunk = chunks.popleft()
         try:
             summary = await _generate_summary_once(
@@ -473,11 +490,14 @@ async def _generate_summary(
             calls += 1
         except _SummaryInputTooLarge:
             if len(chunk) <= 1:
-                raise ValueError('Compaction prompt or previous summary exceeds the summary input budget')
+                raise _CompactionFailure(
+                    'summary_prompt_too_large',
+                    'Compaction prompt or previous summary exceeds the summary input budget.',
+                )
             mid = len(chunk) // 2
             chunks.extendleft([chunk[mid:], chunk[:mid]])
     if not summary:
-        raise ValueError('No content could be summarized within the context budget')
+        raise _CompactionFailure('summary_empty', 'The compaction model returned no usable summary.')
     return summary
 
 
@@ -504,7 +524,7 @@ async def _generate_summary_once(
     context_compaction_model = task_config.get('chat.context_compaction.model')
     task_model_id = context_compaction_model if context_compaction_model in models else model_id
     if task_model_id not in models:
-        raise ValueError('No available model for context compaction')
+        raise _CompactionFailure('summary_model_unavailable', 'No available model for context compaction.')
 
     summary_prompt_template = summary_prompt_template.strip() or DEFAULT_CONTEXT_COMPACTION_PROMPT
     # The text-only prompt formatter otherwise omits tool names and arguments.
@@ -561,6 +581,15 @@ async def _generate_summary_once(
     }
     try:
         response = await generate_chat_completion(request, form_data=payload, user=user)
+    except _SummaryInputTooLarge:
+        raise
+    except Exception as exc:
+        status = getattr(exc, 'status_code', None)
+        raise _CompactionFailure(
+            'summary_request_failed',
+            'The compaction model request failed.',
+            status if isinstance(status, int) else None,
+        ) from exc
     finally:
         for key, value in state_before.items():
             if value is missing:
@@ -571,11 +600,17 @@ async def _generate_summary_once(
     if (isinstance(response, JSONResponse) and response.status_code >= 400) or (
         isinstance(response, dict) and response.get('error')
     ):
-        raise ValueError('Context summary request failed')
+        raise _CompactionFailure(
+            'summary_request_failed',
+            'The compaction model request failed.',
+            response.status_code if isinstance(response, JSONResponse) else None,
+        )
     summary = _response_text(response).strip()
-    if summary and _estimate_tokens(summary) <= max(1, input_budget // 4):
-        return summary
-    raise ValueError('Context summary was empty or exceeded its output budget')
+    if not summary:
+        raise _CompactionFailure('summary_empty', 'The compaction model returned no usable summary.')
+    if _estimate_tokens(summary) > max(1, input_budget // 4):
+        raise _CompactionFailure('summary_too_large', 'The compaction model returned an oversized summary.')
+    return summary
 
 
 SOURCE_BODY_RE = re.compile(r'(<source\b[^>]*>)(.*?)(</source>)', re.DOTALL)
@@ -634,7 +669,8 @@ async def enforce_context_budget(request, form_data: dict, user, models: dict, *
 
     async def progress(description, *, done=False, error=False):
         if event_emitter:
-            await event_emitter(
+            await _emit_compaction_event(
+                event_emitter,
                 {
                     'type': 'context_compaction',
                     'data': {
@@ -643,9 +679,12 @@ async def enforce_context_budget(request, form_data: dict, user, models: dict, *
                         'done': done,
                         'error': error,
                     },
-                }
+                },
             )
 
+    estimated_before = size(original)
+    final_size = None
+    phase = 'history'
     try:
         await progress('Compacting context')
         messages = copy.deepcopy(original)
@@ -683,9 +722,10 @@ async def enforce_context_budget(request, form_data: dict, user, models: dict, *
                 '[Summarized to fit context; original tool results and source references are unchanged]\n' + cache[key]
             )
             if _estimate_tokens(result) >= _estimate_tokens(text):
-                raise ValueError('A tool/source summary did not reduce the context')
+                raise _CompactionFailure('summary_not_smaller', 'A tool/source summary did not reduce the context.')
             return result
 
+        phase = 'tool_results'
         candidates = []
         for message in messages:
             content = message.get('content')
@@ -731,6 +771,7 @@ async def enforce_context_budget(request, form_data: dict, user, models: dict, *
         # Source bodies may initially fill the system prompt. Once those have
         # been reduced, history can have a usable budget for the first time.
         if size(messages) > budget and available <= 32:
+            phase = 'history'
             systems = [m for m in messages if m.get('role') in {'system', 'developer'}]
             history = [m for m in messages if m.get('role') not in {'system', 'developer'}]
             available = budget - size(systems)
@@ -742,9 +783,13 @@ async def enforce_context_budget(request, form_data: dict, user, models: dict, *
                     systems.append({'role': 'system', 'content': '[CONVERSATION SUMMARY]\n' + summary})
                 messages = [*systems, *history]
 
+        phase = 'final_budget'
         final_size = size(messages)
         if final_size > budget:
-            raise ValueError(f'Protected conversation content still needs about {final_size} tokens (budget {budget})')
+            raise _CompactionFailure(
+                'final_budget_exceeded',
+                'The remaining protected content and fixed request overhead exceed the budget.',
+            )
         # Commit only after every reduction and the final check succeeds.
         form_data['messages'] = messages
         await progress('Context compacted', done=True)
@@ -757,13 +802,32 @@ async def enforce_context_budget(request, form_data: dict, user, models: dict, *
         )
     except Exception as exc:
         await progress('Context compaction failed', done=True, error=True)
+        code = exc.code if isinstance(exc, _CompactionFailure) else 'compaction_internal_error'
+        reason = exc.reason if isinstance(exc, _CompactionFailure) else 'Context compaction failed unexpectedly.'
+        provider_status = exc.provider_status if isinstance(exc, _CompactionFailure) else None
         log.warning(
-            'Context budget could not be satisfied for chat=%s: %s', metadata.get('chat_id'), type(exc).__name__
+            'Context compaction failed: chat=%s code=%s phase=%s estimated_before=%d '
+            'estimated_after=%s budget=%d provider_status=%s exception_type=%s',
+            metadata.get('chat_id'),
+            code,
+            phase,
+            estimated_before,
+            final_size,
+            budget,
+            provider_status,
+            type(exc).__name__,
+        )
+        diagnostic = (
+            f'Reason [{code}] at {phase}: {reason} '
+            f'Estimated before={estimated_before}, after={final_size}, budget={budget}'
+            + (f', summary HTTP status={provider_status}' if provider_status is not None else '')
+            + '. '
         )
         raise HTTPException(
             status_code=400,
             detail='Context could not be compacted within the configured token budget. '
-            'Reduce attached/search content or the output limit, select a larger-context compaction model, '
+            + diagnostic
+            + 'Reduce attached/search content or the output limit, select a larger-context compaction model, '
             'or start a new chat. '
             'The oversized request was not sent to the model.',
         ) from exc

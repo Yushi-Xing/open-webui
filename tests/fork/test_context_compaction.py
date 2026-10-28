@@ -228,6 +228,71 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('not sent', raised.exception.detail)
         self.assertEqual(payload['messages'], original)
 
+    async def test_failure_reports_safe_stage_code_and_budget_without_provider_text(self):
+        payload = self.payload(self.tool_messages('x' * 110000))
+        self.provider.side_effect = HTTPException(429, 'sensitive-provider-detail')
+        with self.assertLogs(self.cc.log, level='WARNING') as logs:
+            with self.assertRaises(HTTPException) as raised:
+                await self.guard(payload)
+        detail = raised.exception.detail
+        self.assertIn('[summary_request_failed]', detail)
+        self.assertIn('at tool_results', detail)
+        self.assertIn('budget=80000', detail)
+        self.assertIn('summary HTTP status=429', detail)
+        self.assertIn('not sent', detail)
+        self.assertNotIn('sensitive-provider-detail', detail)
+        self.assertNotIn('sensitive-provider-detail', '\n'.join(logs.output))
+        self.assertIn('code=summary_request_failed', '\n'.join(logs.output))
+
+    async def test_empty_summary_and_final_budget_have_distinct_errors(self):
+        self.provider.side_effect = None
+        self.provider.return_value = {'choices': [{'message': {'content': ''}}]}
+        with self.assertRaises(HTTPException) as empty:
+            await self.guard(self.payload(self.tool_messages('x' * 110000)))
+        self.assertIn('[summary_empty]', empty.exception.detail)
+        self.provider.reset_mock()
+        with self.assertRaises(HTTPException) as protected:
+            await self.guard(self.payload([{'role': 'user', 'content': 'x' * 90000}]))
+        self.assertIn('[final_budget_exceeded]', protected.exception.detail)
+        self.assertIn('after=90004', protected.exception.detail)
+        self.provider.assert_not_awaited()
+
+    async def test_progress_channel_failure_does_not_abort_or_mask_compaction(self):
+        self.events.side_effect = RuntimeError('sensitive-transport-detail')
+        payload = self.payload(self.tool_messages('x' * 110000))
+        with self.assertLogs(self.cc.log, level='WARNING') as logs:
+            await self.guard(payload)
+        self.assertLessEqual(self.cc._estimate_messages_tokens(payload['messages']), 80000)
+        self.assertTrue(self.provider.await_count)
+        self.assertNotIn('sensitive-transport-detail', '\n'.join(logs.output))
+        self.provider.side_effect = RuntimeError('sensitive-provider-detail')
+        with self.assertLogs(self.cc.log, level='WARNING'):
+            with self.assertRaises(HTTPException) as failed:
+                await self.guard(self.payload(self.tool_messages('y' * 110000)))
+        self.assertIn('[summary_request_failed]', failed.exception.detail)
+
+    async def test_progress_failure_keeps_successful_history_checkpoint(self):
+        self.events.side_effect = RuntimeError('transport failed')
+        history = [
+            {'id': 'old-user', 'role': 'user', 'content': 'Old question'},
+            {'id': 'old-answer', 'role': 'assistant', 'content': 'x' * 90000},
+            {'id': 'new-user', 'role': 'user', 'content': 'New question'},
+        ]
+        with self.assertLogs(self.cc.log, level='WARNING'):
+            result, summary, compacted = await self.cc.compact_messages_for_request(
+                self.request,
+                self.user,
+                history,
+                {'chat_id': 'saved', 'message_id': 'new-answer'},
+                'test',
+                self.models,
+            )
+        self.assertTrue(compacted)
+        self.assertEqual(result, [history[-1]])
+        self.chats.upsert_message_to_chat_by_id_and_message_id.assert_awaited_once_with(
+            'saved', 'new-user', {'contextSummary': summary}, touch=False
+        )
+
     async def test_error_object_or_empty_summary_does_not_create_fake_checkpoint(self):
         for response in (
             {'error': {'message': 'too long'}},
@@ -325,6 +390,87 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
     async def test_stale_usage_does_not_hide_freshly_injected_context(self):
         messages = [{'role': 'user', 'content': '中' * 40000, 'usage': {'prompt_tokens': 1}}]
         self.assertTrue(self.cc._exceeds_token_threshold(messages, '', None, 80000))
+
+    async def test_compacted_checkpoint_does_not_repeat_summaries_on_followups(self):
+        history = [
+            {'id': 'old-u', 'role': 'user', 'content': 'Old question'},
+            {'id': 'old-a', 'role': 'assistant', 'content': 'x' * 100000},
+            {'id': 'kept-u', 'role': 'user', 'content': 'Recent question'},
+            {
+                'id': 'kept-a',
+                'role': 'assistant',
+                'content': 'Recent answer',
+                'usage': {'prompt_tokens': 95000, 'completion_tokens': 500},
+            },
+            {'id': 'new-u', 'role': 'user', 'content': 'Current question'},
+        ]
+        metadata = {'chat_id': 'saved', 'user_message_id': 'new-u', 'message_id': 'new-a'}
+        _, _, compacted = await self.cc.compact_messages_for_request(
+            self.request, self.user, copy.deepcopy(history), metadata, 'test', self.models
+        )
+        self.assertTrue(compacted)
+        _, checkpoint, data = self.chats.upsert_message_to_chat_by_id_and_message_id.await_args.args
+        replay = copy.deepcopy(history)
+        next(message for message in replay if message['id'] == checkpoint).update(data)
+        calls = self.provider.await_count
+        for turn in range(3):
+            _, summary, compacted = await self.cc.compact_messages_for_request(
+                self.request, self.user, copy.deepcopy(replay), metadata, 'test', self.models
+            )
+            self.assertFalse(compacted)
+            self.assertTrue(summary)
+            self.assertEqual(self.provider.await_count, calls)
+            replay.extend(
+                [
+                    {'id': f'answer-{turn}', 'role': 'assistant', 'content': 'Short answer'},
+                    {'id': f'question-{turn}', 'role': 'user', 'content': 'Short follow-up'},
+                ]
+            )
+        self.chats.upsert_message_to_chat_by_id_and_message_id.assert_awaited_once()
+
+    async def test_stale_large_usage_does_not_trigger_compaction_without_checkpoint(self):
+        payload = [
+            {'role': 'user', 'content': 'Question'},
+            {
+                'role': 'assistant',
+                'content': 'Answer',
+                'info': {'usage': {'prompt_tokens': 95000, 'completion_tokens': 1000}},
+            },
+            {'role': 'user', 'content': 'Follow-up'},
+        ]
+        _, _, compacted = await self.cc.compact_messages_for_request(
+            self.request, self.user, payload, {}, 'test', self.models, persist=False
+        )
+        self.assertFalse(compacted)
+        self.provider.assert_not_awaited()
+
+    async def test_usage_endpoint_counts_active_checkpoint_instead_of_old_receipt(self):
+        messages = [
+            {'role': 'user', 'content': 'Old content' * 20000},
+            {'role': 'user', 'content': 'Current question', 'contextSummary': 'Saved summary'},
+            {'role': 'assistant', 'content': 'Short answer', 'usage': {'prompt_tokens': 95000}},
+        ]
+        self.chats.get_messages_map_by_chat_id = AsyncMock(return_value={'branch': messages})
+        with patch.object(self.cc, 'get_message_list', return_value=messages):
+            chat = SimpleNamespace(id='saved', current_message_id='leaf', chat={})
+            usage = await self.cc.get_chat_context_usage(chat)
+        expected = self.cc._estimate_tokens('Saved summary') + self.cc._estimate_messages_tokens(messages[1:])
+        self.assertEqual(usage['tokens'], expected)
+        self.assertLess(usage['tokens'], 1000)
+
+    async def test_new_active_content_still_triggers_after_saved_checkpoint(self):
+        messages = [
+            {'role': 'user', 'content': 'Old history'},
+            {'role': 'user', 'content': 'Previous question', 'contextSummary': 'Saved summary'},
+            {'role': 'assistant', 'content': 'x' * 90000, 'usage': {'prompt_tokens': 1}},
+            {'role': 'user', 'content': 'New question'},
+        ]
+        result, summary, compacted = await self.cc.compact_messages_for_request(
+            self.request, self.user, messages, {}, 'test', self.models, persist=False
+        )
+        self.assertTrue(compacted)
+        self.assertTrue(summary)
+        self.assertEqual(result, [messages[-1]])
 
     async def test_history_after_a_completed_tool_batch_keeps_only_current_question(self):
         history = [*self.tool_messages('x' * 90000), {'role': 'user', 'content': 'The next question'}]
@@ -503,7 +649,7 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         try:
             import tiktoken
         except ImportError:
-            self.skipTest('tiktoken is optional for local isolated tests; installed in Actions')
+            self.skipTest('tiktoken is optional for local isolated tests; installed on the remote builder')
         encoder = tiktoken.get_encoding('cl100k_base')
         value = ('搜索结果：代码 def f(x): return x + 1🙂\n' * 500) + '<|endoftext|>'
         with patch.object(self.tokens, '_encoding', return_value=encoder):
