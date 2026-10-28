@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+ulimit -c 0
 cd /work/src
 run_id=${1:?run id required}
 mkdir -p /work/cache/home /work/cache/test-python /work/artifacts/"$run_id" /work/logs/"$run_id"
@@ -24,7 +25,8 @@ node tests/fork/browser-regression.mjs
 # Match npm run build's prebuild/fetch/vite stages, with a heap that fits 6 GiB.
 npm run prebuild
 npm run pyodide:fetch
-node --max-old-space-size=4608 node_modules/vite/bin/vite.js build
+cp /work/scripts/vite-build.mjs .instabox-build.mjs
+node --max-old-space-size=4608 .instabox-build.mjs
 cmp static/static/custom.css build/static/custom.css
 python - <<'PY'
 import json

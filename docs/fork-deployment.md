@@ -91,6 +91,47 @@ limit. The manual release workflow includes focused backend regressions.
 
 ## Update the existing deployment
 
+### InstaBox offline image (2026-10-28)
+
+The InstaBox delivery is an **amd64-only offline archive**, not a published GHCR
+release. The current control-side credentials cannot publish packages. The build
+and validation limits are recorded in [the build record](../ops/instabox/build-20261028.md).
+After transferring `open-webui-amd64.docker.tar.gz` to the VPS, check its SHA-256:
+
+```text
+86d77536985967bf8182b7f0761d5e8d92fd2a3a478167937a523b81c6aedcb4
+```
+
+Load it on an amd64 Docker host with enough free image storage:
+
+```bash
+sha256sum open-webui-amd64.docker.tar.gz
+docker load -i open-webui-amd64.docker.tar.gz
+```
+
+Keep the existing Compose project, secret, data volume and settings. Set:
+
+```yaml
+image: ghcr.io/yushi-xing/open-webui:git-eaa86dca74d2-amd64
+pull_policy: never
+```
+
+Back up the data before updating. Then run:
+
+```bash
+docker compose up -d --no-deps --pull never open-webui
+docker compose logs --tail=100 open-webui
+curl -fsS http://127.0.0.1:3000/health
+```
+
+Do not run `docker compose pull` for this unpublished tag. The mounted
+`./theme/custom.css` still overrides the built-in CSS; keep or remove it according
+to which stylesheet you want. Docker engine load/start was not verified on the
+builder because its system disk was too small; the exact saved rootfs passed
+startup, HTTP and installed-backend smoke checks inside the project container.
+
+### Published GHCR images
+
 Back up the stopped service's `/app/backend/data` directory before updating. Keep
 the current Compose directory/project name, data volume, and `WEBUI_SECRET_KEY`.
 Changing the Compose project name can attach a different named volume.

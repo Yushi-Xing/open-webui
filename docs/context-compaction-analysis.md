@@ -40,7 +40,9 @@
 python -m unittest discover -s tests/fork -p 'test_context_*.py' -v
 ```
 
-正式编译与镜像验证仍只在 Actions 运行；发布工作流已加入该测试。
+本次按用户授权在现有 InstaBox 编译机完成正式编译和针对性测试，未使用
+Actions 或本地编译。镜像根文件系统通过启动及已安装后端检查；Docker 引擎
+直接加载启动未验证。详见 [构建记录](../ops/instabox/build-20261028.md)。
 
 ## 已确认的行为
 

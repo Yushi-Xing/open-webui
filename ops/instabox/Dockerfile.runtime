@@ -23,7 +23,7 @@ COPY src/build /app/build
 COPY src/backend /app/backend
 COPY src/package.json src/CHANGELOG.md src/LICENSE src/LICENSE_NOTICE /app/
 RUN mkdir -p /app/backend/data/cache/tiktoken \
-    && python -c 'import tiktoken; tiktoken.get_encoding("cl100k_base")'
+    && timeout --signal=TERM --kill-after=30s 120 python -c 'import tiktoken; tiktoken.get_encoding("cl100k_base")'
 EXPOSE 8080
 HEALTHCHECK CMD curl --silent --fail http://localhost:8080/health | jq -ne 'input.status == true' || exit 1
 CMD ["bash", "start.sh"]
