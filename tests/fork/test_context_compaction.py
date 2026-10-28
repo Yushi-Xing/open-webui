@@ -5,14 +5,16 @@ No frontend compilation or application/database startup is needed.
 """
 
 import ast
+import collections
 import copy
 import importlib.util
 import json
 import logging
-from pathlib import Path
 import sys
-from types import ModuleType, SimpleNamespace
 import unittest
+from collections.abc import Callable
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,6 +43,21 @@ def text(message):
     if isinstance(value, list):
         return '\n'.join(p.get('text', '') for p in value if isinstance(p, dict))
     return value
+
+
+def actual_functions(path, names, namespace=None):
+    namespace = {} if namespace is None else namespace
+    tree = ast.parse(path.read_text())
+    nodes = [
+        node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in names
+    ]
+    assert len(nodes) == len(names)
+    program = ast.Module(
+        body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), *nodes],
+        type_ignores=[],
+    )
+    exec(compile(ast.fix_missing_locations(program), str(path), 'exec'), namespace)
+    return namespace
 
 
 class ContextTests(unittest.IsolatedAsyncioTestCase):
@@ -217,6 +234,277 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result[0], history[2])
         self.assertEqual(result[1:], history[3:])
         self.assertNotIn(history[1], result)
+
+    def image_turn(self):
+        return {
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': 'Here are the images from the tool results above. Please analyze them.'},
+                {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,AUDIT_IMAGE_BYTES'}},
+            ],
+        }
+
+    async def test_tool_image_turn_keeps_actual_question_and_tool_pair(self):
+        images = self.image_turn()
+        original = self.tool_messages('x' * 110000) + [images]
+        saved = copy.deepcopy(original)
+        payload = self.payload(original)
+        await self.guard(payload)
+        self.assertIn(saved[0], payload['messages'])
+        self.assertIn(images, payload['messages'])
+        self.assertEqual(next(m for m in payload['messages'] if m['role'] == 'tool')['tool_call_id'], 'call-1')
+        self.assertEqual(original, saved)
+
+    async def test_tool_cut_does_not_save_a_moved_question_as_a_whole_turn_checkpoint(self):
+        history = self.tool_messages('x' * 90000)
+        history[0]['id'] = 'current-user'
+        history.extend(
+            [
+                {
+                    'role': 'assistant',
+                    'tool_calls': [{'id': 'call-2', 'function': {'name': 'fetch_url', 'arguments': '{}'}}],
+                },
+                {'role': 'tool', 'tool_call_id': 'call-2', 'content': 'Small result'},
+                self.image_turn(),
+            ]
+        )
+        result, _, compacted = await self.cc.compact_messages_for_request(
+            self.request, self.user, history, {'chat_id': 'saved', 'message_id': 'answer'}, 'test', self.models
+        )
+        self.assertTrue(compacted)
+        self.assertEqual(result[0], history[0])
+        self.assertIn(history[-1], result)
+        self.chats.upsert_message_to_chat_by_id_and_message_id.assert_not_awaited()
+        self.assertIsNone(self.events.await_args.args[0]['data']['checkpoint_message_id'])
+
+    def stored_tool_message(self, body='Invoice total 12345; source https://example.com/invoice'):
+        return {
+            'role': 'assistant',
+            'content': 'Document found.',
+            'output': [
+                {
+                    'type': 'function_call',
+                    'call_id': 'read-1',
+                    'name': 'fetch_url',
+                    'arguments': '{"url":"https://example.com"}',
+                    'status': 'completed',
+                },
+                {
+                    'type': 'function_call_output',
+                    'call_id': 'read-1',
+                    'output': [
+                        {'type': 'input_text', 'text': body},
+                        {'type': 'input_image', 'image_url': 'data:image/png;base64,AUDIT_IMAGE_BYTES'},
+                    ],
+                },
+                {'type': 'message', 'content': [{'type': 'output_text', 'text': 'Document found.'}]},
+            ],
+        }
+
+    async def test_saved_tool_output_is_in_summary_with_actual_text_formatter(self):
+        helpers = actual_functions(
+            UTILS / 'misc.py', {'get_output_text', 'get_content_from_message', 'get_messages_content'}
+        )
+        self.cc.get_content_from_message = helpers['get_content_from_message']
+        self.cc.replace_messages_variable = lambda prompt, messages, name='MESSAGES': prompt.replace(
+            '{{' + name + '}}', helpers['get_messages_content'](messages)
+        )
+        message = self.stored_tool_message()
+        original = copy.deepcopy(message)
+        await self.cc._generate_summary(self.request, self.user, 'test', self.models, [message], [], None, '')
+        prompt = self.summary_requests[0]['messages'][0]['content']
+        for value in ('fetch_url', 'read-1', 'Invoice total 12345', 'https://example.com/invoice'):
+            self.assertIn(value, prompt)
+        self.assertNotIn('AUDIT_IMAGE_BYTES', prompt)
+        self.assertEqual(prompt.count('Document found.'), 1)
+        self.assertEqual(message, original)
+
+    async def test_large_saved_tool_output_is_chunked_without_losing_final_facts(self):
+        message = self.stored_tool_message('Begin source [1]\n' + 'x' * 40000 + '\nEND-FACT: total 12345')
+        await self.cc._generate_summary(self.request, self.user, 'test', self.models, [message], [], None, '')
+        self.assertGreater(len(self.summary_requests), 1)
+        combined = '\n'.join(p['messages'][0]['content'] for p in self.summary_requests)
+        self.assertIn('END-FACT: total 12345', combined)
+        self.assertIn('read-1', combined)
+        self.assertTrue(all(self.cc._estimate_messages_tokens(p['messages']) <= 16000 for p in self.summary_requests))
+
+    async def test_all_text_parts_of_old_messages_reach_summary(self):
+        message = {
+            'role': 'user',
+            'content': [{'type': 'text', 'text': 'First fact'}, {'type': 'text', 'text': 'Second fact'}],
+        }
+        await self.cc._generate_summary(self.request, self.user, 'test', self.models, [message], [], None, '')
+        self.assertIn('Second fact', self.summary_requests[0]['messages'][0]['content'])
+
+    async def test_incomplete_summaries_never_save_a_checkpoint(self):
+        for reason in ('length', 'content_filter', 'tool_calls'):
+            with self.subTest(reason=reason):
+                self.provider.side_effect = None
+                self.provider.return_value = JSONResponse(
+                    {'choices': [{'message': {'content': 'Partial facts'}, 'finish_reason': reason}]}
+                )
+                with self.assertRaises(self.cc._CompactionFailure) as error:
+                    await self.cc.compact_messages_for_request(
+                        self.request,
+                        self.user,
+                        [
+                            {'role': 'user', 'content': 'Old'},
+                            {'role': 'assistant', 'content': 'x' * 90000},
+                            {'id': 'new-user', 'role': 'user', 'content': 'New'},
+                        ],
+                        {'chat_id': 'saved', 'message_id': 'answer'},
+                        'test',
+                        self.models,
+                    )
+                self.assertEqual(error.exception.code, 'summary_incomplete')
+                self.assertTrue(self.events.await_args.args[0]['data']['error'])
+        self.chats.upsert_message_to_chat_by_id_and_message_id.assert_not_awaited()
+
+    async def test_reasoning_only_response_is_not_a_completed_summary(self):
+        self.provider.side_effect = None
+        self.provider.return_value = {
+            'choices': [
+                {'message': {'content': '', 'reasoning_content': 'Unfinished reasoning'}, 'finish_reason': 'stop'}
+            ]
+        }
+        with self.assertRaises(self.cc._CompactionFailure) as error:
+            await self.cc._generate_summary(
+                self.request, self.user, 'test', self.models, [{'role': 'user', 'content': 'Old'}], [], None, ''
+            )
+        self.assertEqual(error.exception.code, 'summary_empty')
+
+    async def test_responses_conversion_preserves_truncation_for_summary_validation(self):
+        helper = actual_functions(
+            ROOT / 'backend/open_webui/routers/openai.py', {'convert_responses_result'}, {'JSONCodec': json}
+        )
+        for status, details in [
+            ('incomplete', {'reason': 'max_output_tokens'}),
+            ('incomplete', {'reason': 'content_filter'}),
+            ('failed', {}),
+        ]:
+            raw = {
+                'status': status,
+                'incomplete_details': details,
+                'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': 'Partial facts'}]}],
+            }
+            converted = helper['convert_responses_result'](raw)
+            self.assertNotEqual(converted['choices'][0]['finish_reason'], 'stop')
+            self.provider.side_effect = None
+            self.provider.return_value = converted
+            with self.assertRaises(self.cc._CompactionFailure) as error:
+                await self.cc._generate_summary(
+                    self.request, self.user, 'test', self.models, [{'role': 'user', 'content': 'Old'}], [], None, ''
+                )
+            self.assertEqual(error.exception.code, 'summary_incomplete')
+        complete = helper['convert_responses_result'](
+            {
+                'status': 'completed',
+                'output': [{'type': 'message', 'content': [{'type': 'output_text', 'text': 'Complete summary'}]}],
+            }
+        )
+        self.provider.return_value = complete
+        self.assertEqual(
+            await self.cc._generate_summary(
+                self.request, self.user, 'test', self.models, [{'role': 'user', 'content': 'Old'}], [], None, ''
+            ),
+            'Complete summary',
+        )
+
+    def actual_payload_helpers(self):
+        helpers = actual_functions(UTILS / 'misc.py', {'deep_update'}, {'collections': collections})
+        helpers.update(JSONCodec=json, log=self.cc.log, Callable=Callable)
+        actual_functions(
+            UTILS / 'payload.py',
+            {
+                'apply_params_to_form_data',
+                'remove_open_webui_params',
+                'apply_model_params_to_body',
+                'apply_model_params_to_body_openai',
+            },
+            helpers,
+        )
+        return helpers
+
+    async def test_summary_custom_and_model_params_cannot_bypass_output_cap(self):
+        self.cc.apply_params_to_form_data = self.actual_payload_helpers()['apply_params_to_form_data']
+        params = {'custom_params': {'max_tokens': '64000', 'max_completion_tokens': '128000'}}
+        self.values['task.model.params'] = params
+        self.models['test']['info']['params'] = {'max_output_tokens': 128000}
+        await self.cc._generate_summary(
+            self.request, self.user, 'test', self.models, [{'role': 'user', 'content': 'Old'}], [], None, ''
+        )
+        self.assertEqual(self.summary_requests[0]['max_tokens'], 1000)
+        self.assertEqual(self.summary_requests[0]['max_completion_tokens'], 1000)
+        self.assertEqual(self.summary_requests[0]['max_output_tokens'], 1000)
+        self.assertEqual(params, {'custom_params': {'max_tokens': '64000', 'max_completion_tokens': '128000'}})
+
+    async def test_summary_guard_clamps_rendered_limits_after_model_presets(self):
+        payload = self.payload(
+            [{'role': 'user', 'content': 'Summarize'}], max_tokens=64000, max_completion_tokens=128000
+        )
+        payload['metadata'].update(task='context_compaction', _context_compaction_input_budget=16000)
+        await self.guard(payload)
+        self.assertEqual(payload['max_tokens'], 1000)
+        self.assertEqual(payload['max_completion_tokens'], 1000)
+        self.provider.assert_not_awaited()
+
+    async def test_ollama_summary_preempts_unlimited_model_output_defaults(self):
+        self.cc.apply_params_to_form_data = self.actual_payload_helpers()['apply_params_to_form_data']
+        self.models['test']['owned_by'] = 'ollama'
+        self.models['test']['info']['params'] = {'num_predict': -1}
+        self.values['task.model.params'] = {'max_completion_tokens': 64000}
+        await self.cc._generate_summary(
+            self.request, self.user, 'test', self.models, [{'role': 'user', 'content': 'Old'}], [], None, ''
+        )
+        self.assertEqual(self.summary_requests[0]['options']['num_predict'], 1000)
+
+    async def test_failed_checkpoint_write_emits_error_and_preserves_history(self):
+        history = [
+            {'role': 'user', 'content': 'Old'},
+            {'role': 'assistant', 'content': 'x' * 90000},
+            {'id': 'new-user', 'role': 'user', 'content': 'New'},
+        ]
+        original = copy.deepcopy(history)
+        for failure in (None, RuntimeError('synthetic DB failure')):
+            self.chats.upsert_message_to_chat_by_id_and_message_id.side_effect = failure
+            self.chats.upsert_message_to_chat_by_id_and_message_id.return_value = None
+            with self.assertRaises(self.cc._CompactionFailure) as error:
+                await self.cc.compact_messages_for_request(
+                    self.request, self.user, history, {'chat_id': 'saved', 'message_id': 'answer'}, 'test', self.models
+                )
+            self.assertEqual(error.exception.code, 'checkpoint_save_failed')
+            self.assertTrue(self.events.await_args.args[0]['data']['error'])
+            self.assertNotIn('checkpoint_message_id', self.events.await_args.args[0]['data'])
+        self.assertEqual(history, original)
+
+    async def test_manual_compaction_does_not_report_success_when_save_fails(self):
+        self.chats.get_messages_map_by_chat_id = AsyncMock(return_value={'branch': True})
+        self.chats.upsert_message_to_chat_by_id_and_message_id.return_value = None
+        chat = SimpleNamespace(id='saved', current_message_id='last', chat={})
+        with patch.object(
+            self.cc,
+            'get_message_list',
+            return_value=[{'role': 'user', 'content': 'Old'}, {'role': 'assistant', 'content': 'Answer'}],
+        ):
+            with self.assertRaises(self.cc._CompactionFailure) as error:
+                await self.cc.compact_chat_branch(self.request, self.user, chat, 'test', self.models)
+        self.assertEqual(error.exception.code, 'checkpoint_save_failed')
+
+    async def test_missing_boundary_id_does_not_write_to_an_unrelated_metadata_id(self):
+        await self.cc.compact_messages_for_request(
+            self.request,
+            self.user,
+            [
+                {'role': 'user', 'content': 'Old'},
+                {'role': 'assistant', 'content': 'x' * 90000},
+                {'role': 'user', 'content': 'New'},
+            ],
+            {'chat_id': 'saved', 'message_id': 'answer', 'user_message_id': 'unrelated'},
+            'test',
+            self.models,
+        )
+        self.chats.upsert_message_to_chat_by_id_and_message_id.assert_not_awaited()
+        self.assertIsNone(self.events.await_args.args[0]['data']['checkpoint_message_id'])
 
     async def test_summary_failure_blocks_provider_and_leaves_payload_intact(self):
         payload = self.payload(self.tool_messages('x' * 110000))
@@ -633,6 +921,57 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
                 self.request, self.payload([{'role': 'user', 'content': 'question'}]), self.user
             )
         headers.assert_not_awaited()
+
+    async def test_provider_router_forwards_clamped_limits_and_keeps_resolved_model(self):
+        path = ROOT / 'backend/open_webui/routers/openai.py'
+        function = next(
+            node
+            for node in ast.parse(path.read_text()).body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == 'generate_chat_completion'
+        )
+        function.decorator_list = []
+        # Stop at provider conversion: exercise the actual preset + guard path.
+        end = next(
+            index
+            for index, node in enumerate(function.body)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == 'prefix_id' for target in node.targets)
+        )
+        function.body = [*function.body[:end], ast.Return(value=ast.Name(id='payload', ctx=ast.Load()))]
+        program = ast.Module(
+            body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), function],
+            type_ignores=[],
+        )
+        params = {'max_completion_tokens': 128000, 'custom_params': {'max_tokens': '64000'}}
+        info = SimpleNamespace(
+            base_model_id='provider-base', params=SimpleNamespace(model_dump=lambda: copy.deepcopy(params))
+        )
+
+        async def system_identity(system, payload, metadata, user):
+            return payload
+
+        namespace = {
+            'Depends': lambda value: None,
+            'get_verified_user': None,
+            'BYPASS_MODEL_ACCESS_CONTROL': False,
+            'Config': SimpleNamespace(get=AsyncMock(return_value=True)),
+            'Models': SimpleNamespace(get_model_by_id=AsyncMock(return_value=info)),
+            'apply_model_params_to_body_openai': self.actual_payload_helpers()['apply_model_params_to_body_openai'],
+            'apply_system_prompt_to_body': system_identity,
+            'check_model_access': AsyncMock(),
+            'get_openai_connection': AsyncMock(return_value=('https://example.com', '', {})),
+        }
+        exec(compile(ast.fix_missing_locations(program), str(path), 'exec'), namespace)
+        self.request.app = SimpleNamespace(
+            state=SimpleNamespace(MODELS=self.models, OPENAI_MODELS={'provider-base': {'urlIdx': 0}})
+        )
+        payload = self.payload([{'role': 'user', 'content': 'Summarize'}])
+        payload['metadata'].update(task='context_compaction', _context_compaction_input_budget=16000)
+        result = await namespace['generate_chat_completion'](self.request, payload, self.user)
+        self.assertEqual(result['model'], 'provider-base')
+        self.assertEqual(result['max_tokens'], 1000)
+        self.assertEqual(result['max_completion_tokens'], 1000)
+        self.provider.assert_not_awaited()
 
     def test_unicode_chunks_are_lossless_and_each_fits_budget(self):
         value = ('中文🙂abc\n' * 1000) + '<|endoftext|>'

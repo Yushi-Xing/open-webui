@@ -24,6 +24,11 @@ instructions authorize InstaBox for this build instead of GitHub Actions.
   with a smaller JS heap and without production source maps/gzip-size reporting.
 - Dependencies: locked npm packages, jsdom 26.1.0, Playwright 1.56.1, uv 0.12.10;
   backend requirements.txt plus upstream's CPU torch/torchvision/torchaudio step.
+- For focused context regressions with dependencies already cached, use
+  `test-context.sh RUN_ID` under the same host lock/container timeout. It runs
+  backend tests, fork Vitest tests and in-memory Chat.svelte compilation without
+  reinstalling dependencies or building production assets. See
+  [the context regression record](context-fixes-20261028.md).
 - Browser downloads, npm modules/cache and runtime virtualenv persist in cache.
 - Produce a native linux/amd64 image using the checked prebuilt frontend and
   runtime venv. Host Docker image assembly is separate from container compilation.

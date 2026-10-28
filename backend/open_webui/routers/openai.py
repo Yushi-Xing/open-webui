@@ -1384,6 +1384,15 @@ def convert_responses_result(response: dict) -> dict:
                 }
             )
 
+    finish_reason = 'tool_calls' if tool_calls else 'stop'
+    if response.get('status') == 'incomplete':
+        reason = (response.get('incomplete_details') or {}).get('reason')
+        finish_reason = (
+            'length' if reason == 'max_output_tokens' else 'content_filter' if reason == 'content_filter' else 'error'
+        )
+    elif response.get('status') not in (None, 'completed'):
+        finish_reason = 'error'
+
     return {
         'id': response.get('id', ''),
         'object': 'chat.completion',
@@ -1396,7 +1405,7 @@ def convert_responses_result(response: dict) -> dict:
                     'content': content,
                     **({'tool_calls': tool_calls} if tool_calls else {}),
                 },
-                'finish_reason': 'tool_calls' if tool_calls else 'stop',
+                'finish_reason': finish_reason,
             }
         ],
         'usage': response.get('usage', {}),
@@ -1482,7 +1491,11 @@ async def generate_chat_completion(
 
     budget_payload = {**payload, 'model': form_data['model'], 'metadata': metadata or {}}
     await enforce_context_budget(request, budget_payload, user, request.app.state.MODELS, bypass_system_prompt=True)
-    payload['messages'] = budget_payload.get('messages', [])
+    # Summary limits can be clamped after model/custom presets are applied.
+    # Keep the resolved provider model ID while carrying those limits forward.
+    for key in ('messages', 'max_tokens', 'max_completion_tokens', 'max_output_tokens'):
+        if key in budget_payload:
+            payload[key] = budget_payload[key]
 
     prefix_id = api_config.get('prefix_id', None)
     payload['model'] = strip_provider_model_prefix(payload['model'], prefix_id)

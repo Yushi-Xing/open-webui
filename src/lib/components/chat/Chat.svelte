@@ -66,11 +66,11 @@
 		removeAllDetails,
 		getCodeBlockContents,
 		displayFileHandler,
-		getUsageTokenCount,
 		isRasterImageContentType
 	} from '$lib/utils';
 	import { AudioQueue } from '$lib/utils/audio';
 	import { appendCodeOutputRules } from '$lib/utils/chat-system-prompt';
+	import { estimateActiveContextUsage } from '$lib/utils/context-usage';
 	import { RealtimeCall, getBridgeTurnState, type BridgeSubmission } from '$lib/utils/realtime';
 	import { acquireWakeLock } from '$lib/utils/wakeLock';
 	import { routeAvatarAnimation } from '$lib/utils/voice-avatar';
@@ -262,33 +262,6 @@
 		}
 	}
 
-	const estimateTokens = (value) => {
-		if (value === null || value === undefined || value === '') {
-			return 0;
-		}
-		if (typeof value !== 'string') {
-			try {
-				value = JSON.stringify(value);
-			} catch {
-				value = String(value);
-			}
-		}
-		return Math.max(1, Math.floor(value.length / 4));
-	};
-
-	const estimateMessagesTokens = (messages) =>
-		messages.reduce((total, message) => {
-			let next = total + 4 + estimateTokens(message.content);
-			next += estimateTokens(message.output);
-			next += estimateTokens(message.tool_calls);
-			if (message.files?.length) {
-				next += estimateTokens(
-					JSON.stringify(message.files).replace(/data:[\w/+.;=%-]*;base64,[A-Za-z0-9+/=]*/g, '')
-				);
-			}
-			return next;
-		}, 0);
-
 	$: contextCompactionEnabled = Boolean($config?.features?.enable_context_compaction);
 
 	const getContextThreshold = () => {
@@ -309,43 +282,7 @@
 		const threshold = contextCompactionEnabled
 			? (getContextThreshold() ?? serverContextUsage?.threshold ?? null)
 			: null;
-		const systemTokens = estimateTokens($settings?.system ?? '');
-		let estimatedTokens = systemTokens;
-		let hasUsageCheckpoint = false;
-		let summary = '';
-		let startIdx = 0;
-
-		for (let idx = 0; idx < messages.length; idx += 1) {
-			const value = messages[idx]?.contextSummary ?? messages[idx]?.context_summary;
-			if (typeof value === 'string' && value.trim()) {
-				summary = value;
-				startIdx = idx;
-			}
-		}
-
-		const activeMessages = messages.slice(startIdx);
-
-		for (let idx = activeMessages.length - 1; idx >= 0; idx -= 1) {
-			const usage = activeMessages[idx]?.usage ?? activeMessages[idx]?.info?.usage;
-			const usageTokens = getUsageTokenCount(usage);
-			if (usageTokens) {
-				hasUsageCheckpoint = true;
-				estimatedTokens = usageTokens + estimateMessagesTokens(activeMessages.slice(idx + 1));
-				break;
-			}
-		}
-
-		if (!hasUsageCheckpoint) {
-			estimatedTokens += estimateTokens(summary) + estimateMessagesTokens(activeMessages);
-		}
-
-		return {
-			tokens: estimatedTokens,
-			estimated_tokens: estimatedTokens,
-			threshold,
-			percent: threshold > 0 ? Math.max(0, Math.round((estimatedTokens / threshold) * 100)) : null,
-			source: 'estimated'
-		};
+		return estimateActiveContextUsage(messages, params?.system ?? $settings?.system ?? '', threshold);
 	};
 
 	$: contextUsage = getContextUsage() ?? (contextCompactionEnabled ? serverContextUsage : null);

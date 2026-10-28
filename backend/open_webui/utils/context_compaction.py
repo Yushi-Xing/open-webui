@@ -58,6 +58,33 @@ async def _emit_compaction_event(event_emitter, event):
             log.warning('Context compaction progress notification failed: %s', type(exc).__name__)
 
 
+def _is_tool_image_message(message: dict) -> bool:
+    content = message.get('content')
+    return bool(
+        message.get('role') == 'user'
+        and isinstance(content, list)
+        and content
+        and isinstance(content[0], dict)
+        and content[0].get('text') == 'Here are the images from the tool results above. Please analyze them.'
+        and any(
+            isinstance(part, dict) and part.get('type') in {'image', 'image_url', 'input_image'} for part in content[1:]
+        )
+    )
+
+
+async def _save_summary_checkpoint(chat_id: str, message_id: str, summary: str):
+    try:
+        saved = await Chats.upsert_message_to_chat_by_id_and_message_id(
+            chat_id, message_id, {'contextSummary': summary}, touch=False
+        )
+    except Exception as exc:
+        raise _CompactionFailure(
+            'checkpoint_save_failed', 'The context summary checkpoint could not be saved.'
+        ) from exc
+    if saved is None:
+        raise _CompactionFailure('checkpoint_save_failed', 'The context summary checkpoint could not be saved.')
+
+
 async def compact_messages_for_request(
     request,
     user,
@@ -93,13 +120,25 @@ async def compact_messages_for_request(
 
     # A tool boundary can fall after the current question. Keep the exact
     # question alongside its call/result batch, rather than only in a summary.
-    if recent_messages[0].get('role') != 'user':
-        latest_user = next((m for m in reversed(messages) if m.get('role') == 'user'), None)
-        if latest_user is not None and any(m is latest_user for m in compacted_messages):
-            recent_messages = [latest_user, *recent_messages]
-            compacted_messages = [m for m in compacted_messages if m is not latest_user]
-            if not compacted_messages:
-                return [*system_messages, *messages], previous_summary, False
+    boundary_message = recent_messages[0]
+    latest_user = next(
+        (m for m in reversed(messages) if m.get('role') == 'user' and not _is_tool_image_message(m)), None
+    )
+    if latest_user is not None and any(m is latest_user for m in compacted_messages):
+        recent_messages = [latest_user, *recent_messages]
+        compacted_messages = [m for m in compacted_messages if m is not latest_user]
+        if not compacted_messages:
+            return [*system_messages, *messages], previous_summary, False
+
+    # A question moved back from before a tool cut is not a whole-turn DB cut.
+    # The tool loop records its own output marker for that case.
+    checkpoint_message_id = (
+        boundary_message.get('id')
+        if recent_messages[0] is boundary_message
+        and boundary_message.get('role') == 'user'
+        and not _is_tool_image_message(boundary_message)
+        else None
+    )
 
     event_emitter = None
     if persist and metadata.get('chat_id') and metadata.get('message_id'):
@@ -131,6 +170,8 @@ async def compact_messages_for_request(
             previous_summary,
             config['prompt_template'],
         )
+        if persist and is_saved_chat_id(metadata.get('chat_id') or '') and checkpoint_message_id:
+            await _save_summary_checkpoint(metadata['chat_id'], checkpoint_message_id, summary)
     except Exception:
         if event_emitter:
             await _emit_compaction_event(
@@ -148,17 +189,6 @@ async def compact_messages_for_request(
         raise
 
     chat_id = metadata.get('chat_id')
-    checkpoint_message_id = (
-        recent_messages[0].get('id') or metadata.get('user_message_id') or metadata.get('message_id')
-    )
-    # Only whole-turn user boundaries correspond to persisted chat checkpoints.
-    if persist and recent_messages[0].get('role') == 'user' and is_saved_chat_id(chat_id) and checkpoint_message_id:
-        await Chats.upsert_message_to_chat_by_id_and_message_id(
-            chat_id,
-            checkpoint_message_id,
-            {'contextSummary': summary},
-            touch=False,
-        )
 
     log.info(
         'Compacted chat context for chat=%s checkpoint=%s response=%s dropped=%d kept=%d summary_chars=%d',
@@ -179,9 +209,7 @@ async def compact_messages_for_request(
                     'action': 'context_compaction',
                     'description': 'Context compacted',
                     'done': True,
-                    'checkpoint_message_id': (
-                        recent_messages[0].get('id') if persist and recent_messages[0].get('role') == 'user' else None
-                    ),
+                    'checkpoint_message_id': checkpoint_message_id if persist else None,
                     'context_summary': summary,
                 },
             },
@@ -225,9 +253,7 @@ async def compact_chat_branch(request, user, chat: Any, model_id: str, models: d
         previous_summary,
         config['prompt_template'],
     )
-    await Chats.upsert_message_to_chat_by_id_and_message_id(
-        chat.id, current_id, {'contextSummary': summary}, touch=False
-    )
+    await _save_summary_checkpoint(chat.id, current_id, summary)
 
     return {
         'ok': True,
@@ -407,14 +433,7 @@ def _find_compaction_boundary(
         calls = message.get('tool_calls') or []
         # A real user turn or the start of a complete call/result batch is a
         # safe cut. Generated user image messages stay with their tool batch.
-        content = message.get('content')
-        tool_images = (
-            isinstance(content, list)
-            and content
-            and isinstance(content[0], dict)
-            and content[0].get('text') == 'Here are the images from the tool results above. Please analyze them.'
-        )
-        user_turn = message.get('role') == 'user' and not tool_images
+        user_turn = message.get('role') == 'user' and not _is_tool_image_message(message)
         if idx and not pending and (user_turn or (message.get('role') == 'assistant' and calls)):
             boundaries.append(idx)
         if message.get('role') == 'assistant':
@@ -446,6 +465,109 @@ class _CompactionFailure(ValueError):
         super().__init__(reason)
 
 
+def _summary_text(value: Any) -> str:
+    """Keep all textual parts, with explicit placeholders for nontext media."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return '\n'.join(part for item in value if (part := _summary_text(item)))
+    if isinstance(value, dict):
+        if value.get('type') in {'image', 'image_url', 'input_image', 'audio', 'input_audio'}:
+            return '[Nontext media retained in the original message]'
+        for key in ('text', 'content'):
+            if key in value:
+                return _summary_text(value[key])
+        return JSONCodec.dumps(value, ensure_ascii=False)
+    return '' if value is None else str(value)
+
+
+def _summary_output_text(item: dict) -> str:
+    if item.get('type') == 'function_call':
+        fields = {key: item[key] for key in ('call_id', 'name', 'arguments', 'status') if key in item}
+        return '[TOOL CALL] ' + JSONCodec.dumps(fields, ensure_ascii=False)
+    if item.get('type') == 'function_call_output':
+        return '[TOOL RESULT ' + str(item.get('call_id', '')) + ']\n' + _summary_text(item.get('output'))
+    if item.get('type') == 'message':
+        return _summary_text(item.get('content'))
+    return ''
+
+
+def _summary_messages(messages: list[dict]) -> list[dict]:
+    """Serialize saved Responses output as well as live Chat Completions text."""
+    result = []
+    for message in messages:
+        parts = []
+        text = _summary_text(message.get('content'))
+        if text:
+            parts.append(text)
+        for item in message.get('output') or []:
+            if not isinstance(item, dict):
+                continue
+            output_text = _summary_output_text(item)
+            if output_text and (item.get('type') != 'message' or output_text not in parts):
+                parts.append(output_text)
+        if message.get('tool_calls'):
+            parts.append('[TOOL CALLS] ' + JSONCodec.dumps(message['tool_calls'], ensure_ascii=False))
+        if message.get('tool_call_id'):
+            parts.insert(0, '[TOOL RESULT ' + str(message['tool_call_id']) + ']')
+        result.append(
+            {
+                'role': 'tool' if _is_tool_image_message(message) else message.get('role', 'unknown'),
+                'content': '\n'.join(parts),
+            }
+        )
+    return result
+
+
+OUTPUT_LIMIT_KEYS = ('max_tokens', 'max_completion_tokens', 'max_output_tokens')
+
+
+def _cap_summary_output(payload: dict, input_budget: int, model_params: dict | None = None):
+    cap = max(1, min(1000, input_budget // 8))
+    model_params = model_params or {}
+    custom = model_params.get('custom_params') or {}
+    keys = [
+        key
+        for key in OUTPUT_LIMIT_KEYS
+        if key in payload or key in model_params or (isinstance(custom, dict) and key in custom)
+    ]
+    for key in keys or ['max_tokens']:
+        payload[key] = min(_parse_positive_int(payload.get(key)) or cap, cap)
+    if isinstance(payload.get('options'), dict):
+        payload['options'] = {
+            **payload['options'],
+            'num_predict': min(_parse_positive_int(payload['options'].get('num_predict')) or cap, cap),
+        }
+
+
+def _completed_summary_text(response: Any, input_budget: int) -> str:
+    decoded = response
+    if isinstance(decoded, JSONResponse):
+        try:
+            decoded = JSONCodec.loads(decoded.body.decode('utf-8', 'replace'))
+        except Exception as exc:
+            raise _CompactionFailure(
+                'summary_invalid_response', 'The compaction model returned an invalid response.'
+            ) from exc
+    if isinstance(decoded, list) and len(decoded) == 1:
+        decoded = decoded[0]
+    if isinstance(decoded, dict):
+        choices = decoded.get('choices') or []
+        incomplete = decoded.get('status') not in (None, 'completed')
+        if choices:
+            incomplete = incomplete or choices[0].get('finish_reason') not in (None, 'stop')
+        if incomplete:
+            raise _CompactionFailure(
+                'summary_incomplete', 'The compaction model stopped before completing its summary.'
+            )
+    summary = _response_text(decoded).strip()
+    if not summary:
+        raise _CompactionFailure('summary_empty', 'The compaction model returned no usable summary.')
+    if _estimate_tokens(summary) > max(1, input_budget // 4):
+        raise _CompactionFailure('summary_too_large', 'The compaction model returned an oversized summary.')
+    return summary
+
+
 async def _generate_summary(
     request, user, model_id, models, compacted_messages, recent_messages, previous_summary, summary_prompt_template
 ) -> str:
@@ -453,6 +575,8 @@ async def _generate_summary(
     # model. Try the original template first, then fold bounded chunks in order.
     config = await _load_config()
     budget = min(config['token_threshold'], config['token_cap'], 16000)
+    compacted_messages = _summary_messages(compacted_messages)
+    recent_messages = _summary_messages(recent_messages)
     args = (request, user, model_id, models)
     try:
         return await _generate_summary_once(
@@ -527,15 +651,8 @@ async def _generate_summary_once(
         raise _CompactionFailure('summary_model_unavailable', 'No available model for context compaction.')
 
     summary_prompt_template = summary_prompt_template.strip() or DEFAULT_CONTEXT_COMPACTION_PROMPT
-    # The text-only prompt formatter otherwise omits tool names and arguments.
-    compacted_messages, recent_messages = list(compacted_messages), list(recent_messages)
-    for messages in (compacted_messages, recent_messages):
-        for idx, message in enumerate(messages):
-            if message.get('tool_calls'):
-                messages[idx] = {
-                    **message,
-                    'content': f'{get_content_from_message(message) or ""}\n[TOOL CALLS] {JSONCodec.dumps(message["tool_calls"])}',
-                }
+    compacted_messages = _summary_messages(compacted_messages)
+    recent_messages = _summary_messages(recent_messages)
     all_messages = [*compacted_messages, *recent_messages]
     prompt = replace_prompt_variable(summary_prompt_template, get_last_user_message(all_messages) or '')
     prompt = replace_messages_variable(prompt, all_messages)
@@ -547,7 +664,9 @@ async def _generate_summary_once(
     task_model_params = task_config.get('task.model.params') or {}
     if not isinstance(task_model_params, dict):
         task_model_params = {}
-    task_model_params = {key: value for key, value in task_model_params.items() if value is not None and value != ''}
+    task_model_params = {
+        key: copy.deepcopy(value) for key, value in task_model_params.items() if value is not None and value != ''
+    }
     task_model_params = task_model_params or {
         'max_tokens': models[task_model_id].get('info', {}).get('params', {}).get('max_tokens', 1000)
     }
@@ -570,7 +689,10 @@ async def _generate_summary_once(
     }
 
     payload = apply_params_to_form_data(payload, models[task_model_id], task_model_params)
-    model_system = (models[task_model_id].get('info', {}).get('params') or {}).get('system') or ''
+    model_params = models[task_model_id].get('info', {}).get('params') or {}
+    # Clamp after custom parameters are flattened, and preempt model defaults.
+    _cap_summary_output(payload, input_budget, model_params)
+    model_system = model_params.get('system') or ''
     if _estimate_messages_tokens(payload['messages']) + _estimate_tokens(model_system) > input_budget:
         raise _SummaryInputTooLarge('Summary prompt exceeds its input budget')
     # The dispatcher/provider router store per-call flags on request.state.
@@ -605,12 +727,7 @@ async def _generate_summary_once(
             'The compaction model request failed.',
             response.status_code if isinstance(response, JSONResponse) else None,
         )
-    summary = _response_text(response).strip()
-    if not summary:
-        raise _CompactionFailure('summary_empty', 'The compaction model returned no usable summary.')
-    if _estimate_tokens(summary) > max(1, input_budget // 4):
-        raise _CompactionFailure('summary_too_large', 'The compaction model returned an oversized summary.')
-    return summary
+    return _completed_summary_text(response, input_budget)
 
 
 SOURCE_BODY_RE = re.compile(r'(<source\b[^>]*>)(.*?)(</source>)', re.DOTALL)
@@ -629,6 +746,10 @@ async def enforce_context_budget(request, form_data: dict, user, models: dict, *
     config = await _load_config()
     if not config['enable']:
         return
+
+    if summary_task:
+        summary_budget = min(_parse_positive_int(metadata.get('_context_compaction_input_budget')) or 16000, 16000)
+        _cap_summary_output(form_data, summary_budget)
 
     budget = _resolve_token_threshold(config['token_threshold'], config['token_cap'], metadata)
     model_id = form_data['model']
@@ -849,7 +970,7 @@ def _response_text(response: Any) -> str:
     choices = response.get('choices') or []
     if choices:
         message = choices[0].get('message') or {}
-        return message.get('content') or message.get('reasoning_content') or ''
+        return _summary_text(message.get('content'))
 
     parts = []
     for item in response.get('output') or []:
