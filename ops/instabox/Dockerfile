@@ -14,5 +14,10 @@ RUN npm install --prefix /opt/test-tools --no-package-lock --ignore-scripts --no
     && /opt/test-tools/node_modules/.bin/playwright install-deps chromium \
     && rm -rf /var/lib/apt/lists/* /root/.npm \
     && python -m pip install --no-cache-dir uv==0.12.10
+# Current v1 containers reuse the same installer in the persistent project cache.
+# A fresh environment can reproduce these tools without host/binfmt changes.
+COPY scripts/arm64-tools.sh /opt/build-recipes/arm64-tools.sh
+RUN bash /opt/build-recipes/arm64-tools.sh /opt/arm64-tools \
+    && rm /opt/arm64-tools/crane.tar.gz /opt/arm64-tools/qemu-user.deb
 WORKDIR /work/src
 CMD ["sleep", "infinity"]

@@ -49,6 +49,18 @@ instructions authorize InstaBox for this build instead of GitHub Actions.
 
 ## Successful builds
 
+ARM64 run: see [the arm64 build record](build-arm64-20261028.md). Reuse the
+official pinned v0.12.4 arm64 runtime and the verified frontend; build with
+`arm64-assemble.sh RUN_ID` inside this container under the same host flock.
+`arm64-smoke.py RUN_ID` runs as container root using explicit QEMU; no host
+binfmt registration, extra privileges or Docker socket. Keep QEMU/crane in the
+project cache via `arm64-tools.sh`. `arm64-publication.py RUN_ID` runs after the
+smoke exits 0, preserving the complete Docker archive plus a smaller publication
+bundle. Publish only from the control machine with `publish-arm64.py`; its
+default mode is verification only. A publication bundle needs its referenced base
+blobs and must not be advertised as a standalone Docker-load archive. Native ARM
+hardware / Docker-engine startup remain unverified; preserve that distinction.
+
 See [the 2026-10-28 build record](build-20261028.md). Application source
 `eaa86dca74d26955ddce9422649a0857f7ff417b` compiled successfully; later recipe-only
 changes do not change that application's source identity. The runtime image is

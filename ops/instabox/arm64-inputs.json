@@ -1,0 +1,39 @@
+{
+  "commit": "eaa86dca74d26955ddce9422649a0857f7ff417b",
+  "base_revision": "33c1978d5bad52a31df75ea55143025dfad18d16",
+  "arm64_base": "ghcr.io/open-webui/open-webui@sha256:786e62045b4f621526ab3d4947b0328cd2a961dfe7a92c8bbeb16cf3625cb31c",
+  "frontend_archive_sha256": "0e9043cec84eaf71cda1ea09aa9a591628abba92cb6f0d5c324db2a459640864",
+  "files": [
+    {
+      "path": "backend/open_webui/config.py",
+      "bytes": 138861,
+      "sha256": "5ccf29878c90c10279d098654dd79856ec3286320ce7c727c48c78bcfa85dd88"
+    },
+    {
+      "path": "backend/open_webui/routers/openai.py",
+      "bytes": 77904,
+      "sha256": "756a329d50db9ee538221fcc12d4336c254783043c746981c43f95b2ccad3e24"
+    },
+    {
+      "path": "backend/open_webui/utils/chat.py",
+      "bytes": 14781,
+      "sha256": "d09986f261c86af741b134273af51564a81cd99b953dbfb8e4118d9ce035a0d4"
+    },
+    {
+      "path": "backend/open_webui/utils/context_compaction.py",
+      "bytes": 35320,
+      "sha256": "850523234cf90d2a746daf6a21e9563fe2fd06fcf61baa16b038e15a4de7d8b7"
+    },
+    {
+      "path": "backend/open_webui/utils/context_tokens.py",
+      "bytes": 1860,
+      "sha256": "2b0ebcb11109fef4bd01b04a7e32b27b99e5bc001b17a745e638971620fc0cc6"
+    },
+    {
+      "path": "backend/open_webui/utils/middleware.py",
+      "bytes": 302970,
+      "sha256": "b876ed18a1ed9f06d44ceff19dbdc6dca5ef04becfb4bfb0f7774fd96f111e65"
+    }
+  ],
+  "source_epoch": 1793117439
+}

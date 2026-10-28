@@ -1,5 +1,7 @@
 **
 !Dockerfile.runtime
+!scripts/
+!scripts/arm64-tools.sh
 !src/
 !src/build/
 !src/build/**

@@ -1,0 +1,17 @@
+# Reference recipe for the arm64 image. arm64-assemble.sh implements the same
+# app replacement with an OCI opaque directory and crane's offline --output.
+# This reuses upstream's actual arm64 binaries; it never relabels an amd64 image.
+ARG BASE_IMAGE=ghcr.io/open-webui/open-webui@sha256:786e62045b4f621526ab3d4947b0328cd2a961dfe7a92c8bbeb16cf3625cb31c
+FROM --platform=linux/arm64 ${BASE_IMAGE}
+ARG BUILD_HASH=eaa86dca74d26955ddce9422649a0857f7ff417b
+RUN rm -rf /app/build && mkdir -p /app/build
+COPY src/build/ /app/build/
+COPY src/backend/open_webui/config.py /app/backend/open_webui/config.py
+COPY src/backend/open_webui/routers/openai.py /app/backend/open_webui/routers/openai.py
+COPY src/backend/open_webui/utils/chat.py /app/backend/open_webui/utils/chat.py
+COPY src/backend/open_webui/utils/context_compaction.py /app/backend/open_webui/utils/context_compaction.py
+COPY src/backend/open_webui/utils/context_tokens.py /app/backend/open_webui/utils/context_tokens.py
+COPY src/backend/open_webui/utils/middleware.py /app/backend/open_webui/utils/middleware.py
+LABEL org.opencontainers.image.source="https://github.com/Yushi-Xing/open-webui" \
+    org.opencontainers.image.revision=${BUILD_HASH}
+ENV WEBUI_BUILD_HASH=${BUILD_HASH}

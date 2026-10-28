@@ -92,6 +92,16 @@ limit. The manual release workflow includes focused backend regressions.
 
 ## Update the existing deployment
 
+### ARM64 build prepared (publication pending)
+
+An arm64 build of the same application revision passed actual arm64 binary,
+tokenizer/PyTorch, 31 backend regression and HTTP startup checks under QEMU.
+See [the arm64 record](../ops/instabox/build-arm64-20261028.md) for provenance,
+artifacts and the native-hardware/Docker-start validation limits. The user will
+configure a control-side GHCR credential later; the arm64 tag and combined
+`git-eaa86dca74d2` index are not published yet. Do not deploy the amd64-only tag
+below on an ARM host, or try to change its architecture label.
+
 ### InstaBox GHCR image (2026-10-28, amd64 only)
 
 The tested InstaBox archive was published from the control machine without
