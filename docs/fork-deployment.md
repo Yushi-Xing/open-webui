@@ -25,7 +25,8 @@ build caches. Test artifacts and Docker build records are retained for seven day
 Images are published under `ghcr.io/yushi-xing/open-webui`:
 
 - `git-<first 12 characters of commit SHA>` identifies a tested source revision.
-- `custom` follows the latest successfully tested custom build.
+- `custom` follows the last multi-architecture Actions release. The separate
+  amd64-only InstaBox publication does not move this tag.
 
 Use the commit tag for deployment and keep the previous image for rollback.
 Private GHCR packages require a registry login on the VPS. Package visibility
@@ -91,12 +92,40 @@ limit. The manual release workflow includes focused backend regressions.
 
 ## Update the existing deployment
 
-### InstaBox offline image (2026-10-28)
+### InstaBox GHCR image (2026-10-28, amd64 only)
 
-The InstaBox delivery is an **amd64-only offline archive**, not a published GHCR
-release. The current control-side credentials cannot publish packages. The build
-and validation limits are recorded in [the build record](../ops/instabox/build-20261028.md).
-After transferring `open-webui-amd64.docker.tar.gz` to the VPS, check its SHA-256:
+The tested InstaBox archive was published from the control machine without
+rebuilding it. It supports **linux/amd64 only**:
+
+```yaml
+image: ghcr.io/yushi-xing/open-webui:git-eaa86dca74d2-amd64
+```
+
+Manifest digest:
+`sha256:34602629b2e34fdb82055e8486b36168dc8ff3af9c10ded0a3dac27673fd4cfc`.
+The published config matches the tested archive, including its source revision
+and layer diff IDs. Existing `custom` amd64/arm64 manifests were left intact.
+
+Keep the existing Compose project, data volume, secret and other settings. Remove
+`pull_policy: never` if present, back up the data, then deploy:
+
+```bash
+docker compose pull open-webui
+docker compose up -d --no-deps open-webui
+docker compose logs --tail=100 open-webui
+curl -fsS http://127.0.0.1:3000/health
+```
+
+The build and validation limits are recorded in
+[the build record](../ops/instabox/build-20261028.md). Docker engine load/start
+was not verified on the builder because its system disk was too small; the exact
+saved rootfs passed startup, HTTP and installed-backend smoke checks inside the
+project container. Registry validation does not replace deployment acceptance.
+
+### Offline alternative for the same image
+
+The saved archive remains available. After transferring
+`open-webui-amd64.docker.tar.gz` to the VPS, check its SHA-256:
 
 ```text
 86d77536985967bf8182b7f0761d5e8d92fd2a3a478167937a523b81c6aedcb4
@@ -124,11 +153,9 @@ docker compose logs --tail=100 open-webui
 curl -fsS http://127.0.0.1:3000/health
 ```
 
-Do not run `docker compose pull` for this unpublished tag. The mounted
-`./theme/custom.css` still overrides the built-in CSS; keep or remove it according
-to which stylesheet you want. Docker engine load/start was not verified on the
-builder because its system disk was too small; the exact saved rootfs passed
-startup, HTTP and installed-backend smoke checks inside the project container.
+Using `pull_policy: never` and `--pull never` selects the locally loaded image.
+The mounted `./theme/custom.css` still overrides the built-in CSS; keep or remove
+it according to which stylesheet you want.
 
 ### Published GHCR images
 
