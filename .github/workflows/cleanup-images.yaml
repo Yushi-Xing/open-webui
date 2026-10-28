@@ -18,12 +18,14 @@ permissions:
 jobs:
   cleanup:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CLEANUP_APPLY: 'false'
-      KEEP_IMAGE_REVISIONS: '0960e9f14e86,3c40910065e9'
-      EXPECTED_CURRENT_TAG: 'git-0960e9f14e86'
+      KEEP_IMAGE_REVISIONS: 'eaa86dca74d2,a3ff47fc825e'
+      KEEP_RECENT_HOURS: '24'
+      EXPECTED_CURRENT_TAG: 'git-a3ff47fc825e'
+      EXPECTED_RETAINED_DIGESTS: '{"eaa86dca74d2":"sha256:c962df6c2918a96886d327d68fba39a3b1b7391b1e862ba1ce9099846145b601","a3ff47fc825e":"sha256:8d65a3b5d1ea15cc5a0270685cb2939934eb2623ae9873d556b7116febdbe890"}'
     steps:
       - uses: actions/checkout@v5
       - name: Inspect retained manifests and generate a cleanup plan

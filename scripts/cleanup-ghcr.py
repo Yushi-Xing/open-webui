@@ -3,6 +3,7 @@
 import json
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import quote
@@ -15,6 +16,10 @@ TOKEN = os.environ['GH_TOKEN']
 IMAGE = REPO.lower()
 KEEP = set(os.environ['KEEP_IMAGE_REVISIONS'].split(','))
 APPLY = os.environ.get('CLEANUP_APPLY') == 'true'
+RECENT_HOURS = int(os.environ.get('KEEP_RECENT_HOURS', '24'))
+if RECENT_HOURS < 24:
+    raise RuntimeError('Cleanup must retain at least the last 24 hours.')
+CUTOFF = datetime.now(timezone.utc) - timedelta(hours=RECENT_HOURS)
 OUT = Path('artifacts')
 OUT.mkdir(exist_ok=True)
 API = 'https://api.github.com'
@@ -32,6 +37,7 @@ def api(path, method='GET'):
         'Accept': 'application/vnd.github+json',
         'X-GitHub-Api-Version': '2022-11-28',
         'User-Agent': 'open-webui-ghcr-cleanup',
+        'Cache-Control': 'no-cache',
     })
     try:
         with urlopen(request, timeout=40) as response:
@@ -51,14 +57,18 @@ def no_builds_running():
 no_builds_running()
 owner_type = api('/users/' + OWNER)['type']
 package_path = f'/{"orgs" if owner_type == "Organization" else "users"}/{OWNER}/packages/container/{quote(PACKAGE, safe="")}'
-versions = []
-page = 1
-while True:
-    batch = api(f'{package_path}/versions?per_page=100&page={page}')
-    versions.extend(batch)
-    if len(batch) < 100:
-        break
-    page += 1
+def list_versions():
+    result = []
+    page = 1
+    while True:
+        batch = api(f'{package_path}/versions?per_page=100&page={page}')
+        result.extend(batch)
+        if len(batch) < 100:
+            return result
+        page += 1
+
+
+versions = list_versions()
 
 with urlopen(f'https://ghcr.io/token?service=ghcr.io&scope=repository:{IMAGE}:pull', timeout=30) as response:
     registry_token = json.load(response)['token']
@@ -82,28 +92,62 @@ def obsolete_tag(tag):
     return bool(match and match.group(1) not in KEEP)
 
 
+def is_recent(version, cutoff):
+    values = [version.get('created_at'), version.get('updated_at')]
+    if not all(values):
+        return True  # Unknown age is not evidence of expiration.
+    return any(datetime.fromisoformat(value.replace('Z', '+00:00')) >= cutoff for value in values)
+
+
+def retained_roots(rows, cutoff):
+    return [version for version in rows if (
+        (tags(version) and not all(obsolete_tag(tag) for tag in tags(version)))
+        or is_recent(version, cutoff)
+    )]
+
+
+def manifest_closure(roots, fetch):
+    protected = set()
+    stack = [version['name'] for version in roots]
+    while stack:
+        digest = stack.pop()
+        if digest in protected:
+            continue
+        data, actual = fetch(digest)
+        if digest != actual:
+            raise RuntimeError(f'Registry digest mismatch: {digest} != {actual}')
+        protected.add(digest)
+        stack.extend(item['digest'] for item in data.get('manifests', []))
+        if data.get('subject', {}).get('digest'):
+            stack.append(data['subject']['digest'])
+    return protected
+
+
+def snapshot(rows):
+    return {version['id']: (version['name'], tuple(sorted(tags(version)))) for version in rows}
+
+
+expected_retained = json.loads(os.environ['EXPECTED_RETAINED_DIGESTS'])
+if set(expected_retained) != KEEP:
+    raise RuntimeError('Every retained release must have a pinned digest.')
+release_versions = [version for version in versions if any(re.fullmatch(r'git-[a-f0-9]{12}', tag) for tag in tags(version))]
+newest_release = max(release_versions, key=lambda version: version['created_at'])
+if not any('git-' + revision in tags(newest_release) for revision in KEEP):
+    raise RuntimeError('Retention configuration omits the newest published release; review before cleanup.')
 for revision in KEEP:
     if not any('git-' + revision in tags(version) for version in versions):
         raise RuntimeError(f'Required retained image git-{revision} is missing.')
+    if manifest('git-' + revision)[1] != expected_retained[revision]:
+        raise RuntimeError(f'Retained release git-{revision} differs from its pinned digest.')
 
 # Keep unknown tags and current build caches as well as both retained releases.
-roots = [version for version in versions if tags(version) and not all(obsolete_tag(tag) for tag in tags(version))]
-protected = set()
-stack = [version['name'] for version in roots]
-while stack:
-    digest = stack.pop()
-    if digest in protected:
-        continue
-    data, actual = manifest(digest)
-    if digest != actual:
-        raise RuntimeError(f'Registry digest mismatch: {digest} != {actual}')
-    protected.add(digest)
-    stack.extend(item['digest'] for item in data.get('manifests', []))
+roots = retained_roots(versions, CUTOFF)
+protected = manifest_closure(roots, manifest)
 
 current, current_digest = manifest('custom')
 expected_tag = os.environ.get('EXPECTED_CURRENT_TAG')
 if expected_tag and manifest(expected_tag)[1] != current_digest:
-    raise RuntimeError('The custom tag does not point to the newly published release.')
+    raise RuntimeError('The custom tag does not match its expected retained release.')
 expected_digest = os.environ.get('EXPECTED_CURRENT_DIGEST')
 if expected_digest and expected_digest != current_digest:
     raise RuntimeError('The custom tag changed since the cleanup plan was generated.')
@@ -125,6 +169,8 @@ audit = {
     'apply': APPLY,
     'package': IMAGE,
     'keep_revisions': sorted(KEEP),
+    'keep_recent_hours': RECENT_HOURS,
+    'cutoff_utc': CUTOFF.isoformat(),
     'current_digest': current_digest,
     'versions_before': versions,
     'protected_digests': sorted(protected),
@@ -143,12 +189,16 @@ print(json.dumps({key: audit[key] for key in ('apply', 'package', 'keep_revision
 print(f'Inventory: {len(versions)} versions, {len(protected)} protected manifests, {len(candidates)} deletion candidates.')
 if APPLY:
     no_builds_running()
+    expected_inventory = snapshot(versions)
     for version in candidates:
+        if snapshot(list_versions()) != expected_inventory:
+            raise RuntimeError('Package inventory changed during cleanup; stopping before further deletion.')
         fresh = api(f'{package_path}/versions/{version["id"]}')
         if fresh['name'] != version['name'] or sorted(tags(fresh)) != sorted(tags(version)):
             raise RuntimeError(f'Version {version["id"]} changed since inspection; refusing deletion.')
         api(f'{package_path}/versions/{version["id"]}', method='DELETE')
         audit['deleted_ids'].append(version['id'])
+        expected_inventory.pop(version['id'])
         save()
         print(f'Deleted {version["id"]}: {tags(version) or version["name"]}')
 
@@ -164,6 +214,12 @@ if APPLY:
         raise RuntimeError('The custom tag changed during cleanup.')
     for digest in protected:
         manifest(digest)
+    remaining = list_versions()
+    if snapshot(remaining) != expected_inventory:
+        raise RuntimeError('Final active versions do not match the exact deletion plan.')
+    if {item['id'] for item in remaining} & set(audit['deleted_ids']):
+        raise RuntimeError('Deleted version IDs are still present in the active inventory.')
+    audit['versions_after'] = remaining
     audit['retained_manifests_verified'] = True
     save()
 
