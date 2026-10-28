@@ -25,8 +25,8 @@ build caches. Test artifacts and Docker build records are retained for seven day
 Images are published under `ghcr.io/yushi-xing/open-webui`:
 
 - `git-<first 12 characters of commit SHA>` identifies a tested source revision.
-- `custom` follows the last multi-architecture Actions release. The separate
-  amd64-only InstaBox publication does not move this tag.
+- `custom` follows the last multi-architecture Actions release. The manual
+  InstaBox publications do not move this tag.
 
 Use the commit tag for deployment and keep the previous image for rollback.
 Private GHCR packages require a registry login on the VPS. Package visibility
@@ -92,15 +92,37 @@ limit. The manual release workflow includes focused backend regressions.
 
 ## Update the existing deployment
 
-### ARM64 build prepared (publication pending)
+### InstaBox multi-architecture GHCR release (2026-10-28)
 
-An arm64 build of the same application revision passed actual arm64 binary,
+Both tested images are published under one version tag, automatically selecting
+linux/amd64 or linux/arm64:
+
+```yaml
+image: ghcr.io/yushi-xing/open-webui:git-eaa86dca74d2
+```
+
+Index digest:
+`sha256:c962df6c2918a96886d327d68fba39a3b1b7391b1e862ba1ce9099846145b601`.
+Both platform digests were verified through anonymous registry access. The ARM64
+manifest/config match the remotely built and tested artifact exactly. Existing
+`custom` remains on its earlier release.
+
+Preserve the existing Compose project, data volume, secret and other settings.
+Remove `pull_policy: never` if present, back up data, then deploy:
+
+```bash
+docker compose pull open-webui
+docker compose up -d --no-deps open-webui
+docker compose logs --tail=100 open-webui
+curl -fsS http://127.0.0.1:3000/health
+```
+
+To pin a single architecture explicitly, use `git-eaa86dca74d2-arm64` or
+`git-eaa86dca74d2-amd64`. The ARM64 image passed actual arm64 binary,
 tokenizer/PyTorch, 31 backend regression and HTTP startup checks under QEMU.
 See [the arm64 record](../ops/instabox/build-arm64-20261028.md) for provenance,
-artifacts and the native-hardware/Docker-start validation limits. The user will
-configure a control-side GHCR credential later; the arm64 tag and combined
-`git-eaa86dca74d2` index are not published yet. Do not deploy the amd64-only tag
-below on an ARM host, or try to change its architecture label.
+artifacts and the native-hardware/Docker-start validation limits. Registry
+publication does not replace health acceptance on the target VPS.
 
 ### InstaBox GHCR image (2026-10-28, amd64 only)
 

@@ -60,11 +60,16 @@ bundle. Publish only from the control machine with `publish-arm64.py`; its
 default mode is verification only. A publication bundle needs its referenced base
 blobs and must not be advertised as a standalone Docker-load archive. Native ARM
 hardware / Docker-engine startup remain unverified; preserve that distinction.
+The verified amd64 and arm64 images are now published under the combined tag
+`ghcr.io/yushi-xing/open-webui:git-eaa86dca74d2`; both platform digests were checked
+anonymously. Publication reused GHCR base blobs and uploaded only the new ARM64
+application layer/config. The control-side temporary credentials were removed.
 
 See [the 2026-10-28 build record](build-20261028.md). Application source
 `eaa86dca74d26955ddce9422649a0857f7ff417b` compiled successfully; later recipe-only
-changes do not change that application's source identity. The runtime image is
-linux/amd64 only. Its archive, frontend bundle, test reports and logs are saved.
+changes do not change that application's source identity. This initial image is
+linux/amd64 only; the ARM64 run above supplies the second architecture. Archives,
+frontend bundle, test reports and logs are saved.
 Root Docker storage retained about 12 GiB (79%); targeted runtime cache removal
 returned no reclaimed bytes. Do not repeat a Docker image unpack there without
 first providing adequate space through an authorized, project-safe method.
