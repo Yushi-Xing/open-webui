@@ -930,14 +930,22 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
             if isinstance(node, ast.AsyncFunctionDef) and node.name == 'generate_chat_completion'
         )
         function.decorator_list = []
-        # Stop at provider conversion: exercise the actual preset + guard path.
+        # Exercise the actual preset, guard, provider conversion and auth path.
         end = next(
             index
             for index, node in enumerate(function.body)
             if isinstance(node, ast.Assign)
-            and any(isinstance(target, ast.Name) and target.id == 'prefix_id' for target in node.targets)
+            and any(isinstance(target, ast.Name) and target.id == 'is_responses' for target in node.targets)
         )
-        function.body = [*function.body[:end], ast.Return(value=ast.Name(id='payload', ctx=ast.Load()))]
+        function.body = [
+            *function.body[:end],
+            ast.Return(
+                value=ast.Tuple(
+                    elts=[ast.Name(id='payload', ctx=ast.Load()), ast.Name(id='headers', ctx=ast.Load())],
+                    ctx=ast.Load(),
+                )
+            ),
+        ]
         program = ast.Module(
             body=[ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0), function],
             type_ignores=[],
@@ -950,6 +958,9 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         async def system_identity(system, payload, metadata, user):
             return payload
 
+        async def auth_headers(request, url, key, config, metadata, user):
+            return {'Authorization': f'Bearer {key}'}, {}
+
         namespace = {
             'Depends': lambda value: None,
             'get_verified_user': None,
@@ -959,7 +970,10 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
             'apply_model_params_to_body_openai': self.actual_payload_helpers()['apply_model_params_to_body_openai'],
             'apply_system_prompt_to_body': system_identity,
             'check_model_access': AsyncMock(),
-            'get_openai_connection': AsyncMock(return_value=('https://example.com', '', {})),
+            'get_openai_connection': AsyncMock(return_value=('https://example.com', 'provider-test-key', {})),
+            'strip_provider_model_prefix': lambda model, prefix: model,
+            'is_openai_new_model': lambda model: False,
+            'get_headers_and_cookies': auth_headers,
         }
         exec(compile(ast.fix_missing_locations(program), str(path), 'exec'), namespace)
         self.request.app = SimpleNamespace(
@@ -967,10 +981,11 @@ class ContextTests(unittest.IsolatedAsyncioTestCase):
         )
         payload = self.payload([{'role': 'user', 'content': 'Summarize'}])
         payload['metadata'].update(task='context_compaction', _context_compaction_input_budget=16000)
-        result = await namespace['generate_chat_completion'](self.request, payload, self.user)
+        result, headers = await namespace['generate_chat_completion'](self.request, payload, self.user)
         self.assertEqual(result['model'], 'provider-base')
         self.assertEqual(result['max_tokens'], 1000)
-        self.assertEqual(result['max_completion_tokens'], 1000)
+        self.assertNotIn('max_completion_tokens', result)
+        self.assertEqual(headers['Authorization'], 'Bearer provider-test-key')
         self.provider.assert_not_awaited()
 
     def test_unicode_chunks_are_lossless_and_each_fits_budget(self):

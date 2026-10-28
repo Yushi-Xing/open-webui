@@ -1493,9 +1493,9 @@ async def generate_chat_completion(
     await enforce_context_budget(request, budget_payload, user, request.app.state.MODELS, bypass_system_prompt=True)
     # Summary limits can be clamped after model/custom presets are applied.
     # Keep the resolved provider model ID while carrying those limits forward.
-    for key in ('messages', 'max_tokens', 'max_completion_tokens', 'max_output_tokens'):
-        if key in budget_payload:
-            payload[key] = budget_payload[key]
+    for field in ('messages', 'max_tokens', 'max_completion_tokens', 'max_output_tokens'):
+        if field in budget_payload:
+            payload[field] = budget_payload[field]
 
     prefix_id = api_config.get('prefix_id', None)
     payload['model'] = strip_provider_model_prefix(payload['model'], prefix_id)
